@@ -37,15 +37,15 @@ static int SCREEN_HEIGHT = 240;
 
 // Game object structure
 typedef struct OBJECT {
-    int dx;       // x-coordinate in level_data
-    int dy;       // y-coordinate in level_data  
-    int x;        // x-coordinate on screen
-    int y;        // y-coordinate on screen
-    int dir;      // direction
-    int step;     // number of steps object has moved
-    int l;        // l==1 -> valid data in object
-    int sx;       // x-source data
-    int sy;       // y-source data
+    int dx; // x-coordinate in level_data
+    int dy; // y-coordinate in level_data
+    int x; // x-coordinate on screen
+    int y; // y-coordinate on screen
+    int dir; // direction
+    int step; // number of steps object has moved
+    int l; // l==1 -> valid data in object
+    int sx; // x-source data
+    int sy; // y-source data
 } OBJECT;
 
 // Global game state
@@ -56,7 +56,7 @@ static SDL_Texture *patterns_texture = NULL;
 static SDL_Texture *game_surface = NULL;
 
 // Game data
-static char levels[4736];              // storage space for 25 levels
+static char levels[4736]; // storage space for 25 levels
 static char level_data[LEVEL_WIDTH * LEVEL_HEIGHT];
 static OBJECT objects[MAX_OBJECTS];
 // High scores (simplified for embedded version)
@@ -99,7 +99,7 @@ int load_assets() {
     intro_texture = SDL_CreateTextureFromSurface(renderer, intro_surface);
     SDL_DestroySurface(intro_surface);
 
-    // Load patterns bitmap  
+    // Load patterns bitmap
     SDL_Surface *patterns_surface = SDL_LoadBMP("/assets/patterns.bmp");
     if (!patterns_surface) {
         printf("Failed to load /assets/patterns.bmp: %s\n", SDL_GetError());
@@ -110,7 +110,7 @@ int load_assets() {
 
     // Create game surface texture for off-screen rendering
     game_surface = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-                                    SDL_TEXTUREACCESS_TARGET, GAME_WIDTH, GAME_HEIGHT);
+                                     SDL_TEXTUREACCESS_TARGET, GAME_WIDTH, GAME_HEIGHT);
     if (!game_surface) {
         printf("Failed to create game surface: %s\n", SDL_GetError());
         return 0;
@@ -141,7 +141,7 @@ void draw_text_out(int x, int y, const char *s) {
             sx = 128;
             sy = 8;
         } else {
-            sx = (int)(s[c] - 65) * 8 + 48;
+            sx = (int) (s[c] - 65) * 8 + 48;
             sy = 0;
         }
         SDL_FRect src_rect = {sx, sy, 8, 8};
@@ -213,20 +213,20 @@ void draw_level() {
 // Initialize level data
 void init_level_data() {
     int a = (level - 1) * (LEVEL_WIDTH * LEVEL_HEIGHT + 4);
-    
+
     // Binary Coded Decimal conversion for time
     av_time = (levels[a + 1] & 15) + ((levels[a + 1] & 240) >> 4) * 10;
     av_time = av_time + (levels[a] & 15) * 100 + ((levels[a] & 240) >> 4) * 1000;
-    av_time = av_time + av_time / 2;  // 50% extra time
-    
+    av_time = av_time + av_time / 2; // 50% extra time
+
     a = a + 4;
     for (int c = 0; c < LEVEL_WIDTH * LEVEL_HEIGHT; c++) {
         int d = levels[a + c];
-        if (d == 15) d--;  // Remove old enemy type
+        if (d == 15) d--; // Remove old enemy type
         level_data[c] = d;
     }
     a = a - 2;
-    level_data[levels[a] * LEVEL_WIDTH + levels[a + 1]] = 32;  // Player start position
+    level_data[levels[a] * LEVEL_WIDTH + levels[a + 1]] = 32; // Player start position
 }
 
 // Count fruits in level
@@ -257,17 +257,17 @@ void show_intro() {
     SDL_SetRenderTarget(renderer, NULL);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
-    
+
     // Scale intro to fit screen while maintaining aspect ratio
-    float scale_x = (float)SCREEN_WIDTH / GAME_WIDTH;
-    float scale_y = (float)SCREEN_HEIGHT / GAME_HEIGHT;
+    float scale_x = (float) SCREEN_WIDTH / GAME_WIDTH;
+    float scale_y = (float) SCREEN_HEIGHT / GAME_HEIGHT;
     float scale = (scale_x < scale_y) ? scale_x : scale_y;
-    
+
     int scaled_w = GAME_WIDTH * scale;
     int scaled_h = GAME_HEIGHT * scale;
     int offset_x = (SCREEN_WIDTH - scaled_w) / 2;
     int offset_y = (SCREEN_HEIGHT - scaled_h) / 2;
-    
+
     SDL_FRect dst_rect = {offset_x, offset_y, scaled_w, scaled_h};
     SDL_RenderTexture(renderer, intro_texture, NULL, &dst_rect);
     SDL_RenderPresent(renderer);
@@ -277,7 +277,7 @@ void show_intro() {
 int select_option() {
     int option = 0;
     int confirmed = 0;
-    
+
     while (!confirmed) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -305,11 +305,11 @@ int select_option() {
 void init_objects() {
     // Reset all objects
     memset(objects, 0, sizeof(objects));
-    
+
     // Find player start position
     int c = 0;
     while (level_data[c] != 32) c++;
-    
+
     objects[0].dx = c % LEVEL_WIDTH;
     objects[0].dy = c / LEVEL_WIDTH;
     objects[0].x = (c % LEVEL_WIDTH) * 16 + 8;
@@ -318,13 +318,14 @@ void init_objects() {
     objects[0].sx = 0;
     objects[0].sy = 48;
     level_data[c] = 0;
-    
+
     // Initialize rocks and enemies (simplified)
     int cur_rock = 5;
     int cur_enemy = 1;
-    
+
     for (c = 0; c < LEVEL_WIDTH * LEVEL_HEIGHT; c++) {
-        if (level_data[c] == 3 && cur_rock < 15) {  // Rock
+        if (level_data[c] == 3 && cur_rock < 15) {
+            // Rock
             objects[cur_rock].dx = c % LEVEL_WIDTH;
             objects[cur_rock].dy = c / LEVEL_WIDTH;
             objects[cur_rock].x = (c % LEVEL_WIDTH) * 16 + 8;
@@ -334,7 +335,8 @@ void init_objects() {
             objects[cur_rock].sy = 16;
             cur_rock++;
         }
-        if ((level_data[c] == 14 || level_data[c] == 13) && cur_enemy < 5) {  // Enemy
+        if ((level_data[c] == 14 || level_data[c] == 13) && cur_enemy < 5) {
+            // Enemy
             objects[cur_enemy].dx = c % LEVEL_WIDTH;
             objects[cur_enemy].dy = c / LEVEL_WIDTH;
             objects[cur_enemy].x = (c % LEVEL_WIDTH) * 16 + 8;
@@ -363,12 +365,20 @@ void print_objects() {
 void move_player() {
     if (objects[0].step > 0) {
         objects[0].step--;
+
+        // Animate sprite frames (alternate between frames on odd steps)
+        if (objects[0].step & 1) {
+            objects[0].sx = 16; // Second animation frame
+        } else {
+            objects[0].sx = 0; // First animation frame
+        }
+
         // Continue movement animation
         if (objects[0].dir == UP) objects[0].y--;
         else if (objects[0].dir == DOWN) objects[0].y++;
         else if (objects[0].dir == LEFT) objects[0].x--;
         else if (objects[0].dir == RIGHT) objects[0].x++;
-        
+
         if (objects[0].step == 0) {
             // Movement completed, update grid position
             if (objects[0].dir == UP) objects[0].dy--;
@@ -376,10 +386,11 @@ void move_player() {
             else if (objects[0].dir == LEFT) objects[0].dx--;
             else if (objects[0].dir == RIGHT) objects[0].dx++;
             objects[0].dir = 0;
-            
+
             // Check for item pickup
             int item = level_data[objects[0].dx + objects[0].dy * LEVEL_WIDTH];
-            if (item == 4) {  // Fruit
+            if (item == 4) {
+                // Fruit
                 fruit--;
                 score += 500;
                 level_data[objects[0].dx + objects[0].dy * LEVEL_WIDTH] = 0;
@@ -387,14 +398,15 @@ void move_player() {
         }
         return;
     }
-    
+
     // Start new movement
     if (keyboard_state[SDL_SCANCODE_UP] && objects[0].dy > 0) {
         int target = level_data[objects[0].dx + (objects[0].dy - 1) * LEVEL_WIDTH];
-        if (target == 0 || target == 4) {  // Empty or fruit
+        if (target == 0 || target == 4) {
+            // Empty or fruit
             objects[0].dir = UP;
             objects[0].step = 16;
-            objects[0].sx = -16;
+            objects[0].sx = 0; // Fixed: start at sprite 0, not -16
             objects[0].sy = 64;
         }
     } else if (keyboard_state[SDL_SCANCODE_DOWN] && objects[0].dy < LEVEL_HEIGHT - 1) {
@@ -402,7 +414,7 @@ void move_player() {
         if (target == 0 || target == 4) {
             objects[0].dir = DOWN;
             objects[0].step = 16;
-            objects[0].sx = -16;
+            objects[0].sx = 0; // Fixed: start at sprite 0, not -16
             objects[0].sy = 80;
         }
     } else if (keyboard_state[SDL_SCANCODE_LEFT] && objects[0].dx > 0) {
@@ -410,7 +422,7 @@ void move_player() {
         if (target == 0 || target == 4) {
             objects[0].dir = LEFT;
             objects[0].step = 16;
-            objects[0].sx = -16;
+            objects[0].sx = 0; // Fixed: start at sprite 0, not -16
             objects[0].sy = 32;
         }
     } else if (keyboard_state[SDL_SCANCODE_RIGHT] && objects[0].dx < LEVEL_WIDTH - 1) {
@@ -418,11 +430,11 @@ void move_player() {
         if (target == 0 || target == 4) {
             objects[0].dir = RIGHT;
             objects[0].step = 16;
-            objects[0].sx = -16;
+            objects[0].sx = 0; // Fixed: start at sprite 0, not -16
             objects[0].sy = 48;
         }
     }
-    
+
     if (keyboard_state[SDL_SCANCODE_ESCAPE]) {
         dead = 1;
     }
@@ -433,7 +445,7 @@ int game() {
     level = 1;
     lives = 3;
     score = 0;
-    
+
     while (level <= 25 && lives > 0) {
         init_level_data();
         print_level();
@@ -441,7 +453,7 @@ int game() {
         init_objects();
         dead = 0;
         freeze_enemy = 0;
-        
+
         // Game loop for current level
         while (fruit > 0 && av_time > 0 && !dead) {
             SDL_Event event;
@@ -450,49 +462,49 @@ int game() {
                     return 0;
                 }
             }
-            
+
             // Process USB HID keyboard events (ESP32-P4 only)
 #ifdef CONFIG_IDF_TARGET_ESP32P4
             if (is_keyboard_available()) {
                 process_keyboard();
             }
 #endif
-            
+
             keyboard_state = SDL_GetKeyboardState(NULL);
-            
+
             // Clear player position
             SDL_SetRenderTarget(renderer, game_surface);
             SDL_FRect clear_rect = {objects[0].x, objects[0].y, 16, 16};
             SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
             SDL_RenderFillRect(renderer, &clear_rect);
-            
+
             move_player();
             print_objects();
             av_time--;
             print_stats();
-            
+
             // Render game surface to screen
             SDL_SetRenderTarget(renderer, NULL);
             SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
             SDL_RenderClear(renderer);
-            
+
             // Scale game to fit screen
-            float scale_x = (float)SCREEN_WIDTH / GAME_WIDTH;
-            float scale_y = (float)SCREEN_HEIGHT / GAME_HEIGHT;
+            float scale_x = (float) SCREEN_WIDTH / GAME_WIDTH;
+            float scale_y = (float) SCREEN_HEIGHT / GAME_HEIGHT;
             float scale = (scale_x < scale_y) ? scale_x : scale_y;
-            
+
             int scaled_w = GAME_WIDTH * scale;
             int scaled_h = GAME_HEIGHT * scale;
             int offset_x = (SCREEN_WIDTH - scaled_w) / 2;
             int offset_y = (SCREEN_HEIGHT - scaled_h) / 2;
-            
+
             SDL_FRect dst_rect = {offset_x, offset_y, scaled_w, scaled_h};
             SDL_RenderTexture(renderer, game_surface, NULL, &dst_rect);
             SDL_RenderPresent(renderer);
-            
-            vTaskDelay(pdMS_TO_TICKS(33));  // ~30 FPS
+
+            vTaskDelay(pdMS_TO_TICKS(33)); // ~30 FPS
         }
-        
+
         if (av_time == 0 || dead) {
             lives--;
         } else if (fruit == 0) {
@@ -500,11 +512,11 @@ int game() {
             score += av_time * 10;
         }
     }
-    
+
     return 1;
 }
 
-void* sdl_thread(void* args) {
+void *sdl_thread(void *args) {
     printf("Fruit Land on ESP32\n");
 
     // Initialize filesystem first
@@ -559,12 +571,12 @@ void* sdl_thread(void* args) {
     }
 
     printf("Starting game...\n");
-    
+
     while (game_running) {
         show_intro();
-        vTaskDelay(pdMS_TO_TICKS(2000));  // Show intro for 2 seconds
+        vTaskDelay(pdMS_TO_TICKS(2000)); // Show intro for 2 seconds
         game();
-        vTaskDelay(pdMS_TO_TICKS(1000));  // Brief pause before restart
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Brief pause before restart
     }
 
     // Cleanup
@@ -586,7 +598,7 @@ void app_main(void) {
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 65536);  // Increased stack size for game
+    pthread_attr_setstacksize(&attr, 65536); // Increased stack size for game
 
     int ret = pthread_create(&sdl_pthread, &attr, sdl_thread, NULL);
     if (ret != 0) {
