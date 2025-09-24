@@ -1,0 +1,45 @@
+dependencies:
+  espressif/esp-box-3_noglib:
+    matches:
+    - if: $CONFIG{SDL_BSP_ESP_BOX_3} == True
+    version: '*'
+  espressif/esp32_c3_lcdkit:
+    matches:
+    - if: $CONFIG{SDL_BSP_ESP32_C3_LCDKIT} == True
+    version: ~2.0.1
+  espressif/esp32_p4_function_ev_board_noglib:
+    matches:
+    - if: $CONFIG{SDL_BSP_ESP32_P4_FUNCTION_EV} == True
+    version: '*'
+  espressif/esp32_s3_lcd_ev_board_noglib:
+    matches:
+    - if: $CONFIG{SDL_BSP_ESP32_S3_LCD_EV_BOARD} == True
+    version: ~4.0.0
+  espressif/esp_lcd_touch:
+    matches:
+    - if: $CONFIG{SDL_BSP_M5STACK_CORE_S3} == True
+    - if: $CONFIG{SDL_BSP_ESP32_S3_LCD_EV_BOARD} == True
+    - if: $CONFIG{SDL_BSP_ESP32_P4_FUNCTION_EV} == True
+    version: '*'
+  espressif/m5_atom_s3_noglib:
+    matches:
+    - if: $CONFIG{SDL_BSP_M5_ATOM_S3} == True
+    version: ~1.0.0
+  espressif/m5stack_core_s3_noglib:
+    matches:
+    - if: $CONFIG{SDL_BSP_M5STACK_CORE_S3} == True
+    version: '*'
+  georgik/m5stack_tab5:
+    git: https://github.com/georgik/esp-bsp.git
+    matches:
+    - if: $CONFIG{SDL_BSP_M5STACK_TAB5} == True
+    path: bsp/m5stack_tab5
+    version: feature/m5stack-tab5-sdl3
+  georgik/sdl:
+    version: '>=3.3.0~2'
+  georgik/sdl_bsp:
+    git: https://github.com/georgik/esp-idf-component-SDL_bsp.git
+    version: '*'
+  idf:
+    version: '>=5.5.0'
+  joltwallet/littlefs: ^1.20.1
