@@ -1,0 +1,117 @@
+name: Create GitHub Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_name:
+        description: 'Name of the GitHub Release'
+        required: true
+        default: 'v1.0.0'
+      release_tag:
+        description: 'Tag for the GitHub Release'
+        required: true
+        default: 'v1.0.0'
+      prefix:
+        description: 'Prefix for binary name'
+        required: true
+        default: 'esp32-fruitland'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install GitHub CLI
+        run: sudo apt-get install gh
+
+      - name: Authenticate GitHub CLI
+        run: gh auth login --with-token <<< "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Check if Release Exists
+        id: check_release
+        run: |
+          set +e
+          gh release view ${{ github.event.inputs.release_tag }} > /dev/null 2>&1
+          if [ $? -eq 0 ]; then
+            echo "Release already exists."
+            echo "release_exists=true" >> $GITHUB_ENV
+          else
+            echo "Release does not exist."
+            echo "release_exists=false" >> $GITHUB_ENV
+          fi
+          set -e
+
+      - name: Generate Release Notes
+        run: |
+          cat > /tmp/release_notes.md <<EOF
+          # ESP32-Fruitland ${{ github.event.inputs.release_tag }}
+          
+          🍎 **Classic arcade-style fruit collection game** ported to ESP32 with SDL3.
+          
+          ## 🚀 Web-based Flashing (Easiest)
+          
+          Flash directly from your browser - no software installation required:
+          
+          [![Try it with ESP Launchpad](https://espressif.github.io/esp-launchpad/assets/try_with_launchpad.png)](https://georgik.github.io/esp32-fruitland/?flashConfigURL=https://georgik.github.io/esp32-fruitland/config/config.toml)
+          
+          ## 🎮 Game Features
+          
+          - **🍎 Fruit Collection**: Catch different types of fruits for points
+          - **🎯 Obstacle Avoidance**: Navigate around falling hazards  
+          - **🏆 Score System**: Classic arcade scoring with high score tracking
+          - **🎮 Responsive Controls**: Touch or button input depending on board capabilities
+          
+          ## 🛠️ Supported Hardware (PSRAM Required)
+          
+          **⚠️ Important**: ESP32-Fruitland requires PSRAM for proper operation.
+          
+          ### ✅ Compatible Boards:
+          - **ESP32-S3-BOX-3** - 320×240 display, OCTAL PSRAM (Recommended)
+          - **M5Stack CoreS3** - 320×240 display, QUAD PSRAM
+          - **M5Stack Tab5** - 1280×720 MIPI-DSI display, 32MB PSRAM (ESP32-P4)
+          - **ESP32-P4 Function EV Board** - Up to 1280×800 display, 32MB PSRAM
+          - **ESP32-S3-LCD-EV-Board** - Multiple LCD support, 16MB OCTAL PSRAM
+          
+          ### 🎛️ Game Controls
+          - **Arrow Keys/Touch**: Move player
+          - **Space/Tap**: Action button
+          - **Enter**: Pause/Menu
+          
+          ## 🔧 Technical Features
+          
+          - **SDL3 Graphics**: Hardware-accelerated rendering
+          - **LittleFS Storage**: Efficient asset management
+          - **Multi-Resolution**: Automatic scaling for different displays
+          - **PSRAM Optimization**: Large framebuffers in external memory
+          EOF
+
+      - name: Create Release
+        if: env.release_exists == 'false'
+        run: |
+          gh release create ${{ github.event.inputs.release_tag }} --title "${{ github.event.inputs.release_name }}" --prerelease --notes-file /tmp/release_notes.md
+
+      - name: Download Build Artifacts
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: build.yml
+          name_is_regexp: true
+          name: '${{ github.event.inputs.prefix }}-${{ github.event.inputs.release_tag }}-.*'
+          path: artifacts
+
+      - name: List Downloaded Files
+        run: |
+          echo "Listing all files in the artifacts directory:"
+          find artifacts -type f
+
+      - name: Upload Binaries to Release
+        run: |
+          # Upload merged binaries for ESP Launchpad
+          for file in $(find artifacts -type f -name "*.bin"); do
+            # Upload the merged binary directly
+            gh release upload "${{ github.event.inputs.release_tag }}" "$file" --clobber
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

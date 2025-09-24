@@ -1,0 +1,58 @@
+name: Build ESP32-Fruitland Application
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+      prefix:
+        description: 'Prefix for binary name'
+        required: true
+        default: 'esp32-fruitland'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Only include PSRAM-compatible boards that can run Fruitland
+        board: [esp-box-3, m5stack_core_s3, m5stack_tab5, esp32_p4_function_ev_board, esp32_s3_lcd_ev_board]
+      fail-fast: false
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set Target for ESP-IDF
+        run: |
+          echo "TARGET=$(case ${{ matrix.board }} in
+            esp-box-3) echo 'esp32s3';;
+            m5stack_core_s3) echo 'esp32s3';;
+            esp32_s3_lcd_ev_board) echo 'esp32s3';;
+            esp32_p4_function_ev_board) echo 'esp32p4';;
+            m5stack_tab5) echo 'esp32p4';;
+            *) echo 'Unknown target'; exit 1;;
+          esac)" >> $GITHUB_ENV
+
+      - name: esp-idf build and create merged binary
+        uses: espressif/esp-idf-ci-action@v1.1.0
+        with:
+          esp_idf_version: latest
+          target: ${{ env.TARGET }}
+          path: '.'
+          command: |
+            cp sdkconfig.defaults.${{ matrix.board }} sdkconfig.defaults &&
+            idf.py build &&
+            cd build &&
+            # Create merged binary for ESP Launchpad
+            esptool.py --chip ${{ env.TARGET }} merge_bin -o ../${{ github.event.inputs.prefix }}-${{ github.event.inputs.version }}-${{ matrix.board }}.bin "@flash_args"
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.prefix }}-${{ github.event.inputs.version }}-${{ matrix.board }}.bin
+          path: ${{ github.event.inputs.prefix }}-${{ github.event.inputs.version }}-${{ matrix.board }}.bin

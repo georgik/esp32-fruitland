@@ -27,3 +27,6 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 # Touch support disabled due to BSP dependency issues
 # CONFIG_SDL_BSP_TOUCH_ENABLE is not set
 
+# Custom partition table for assets
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_esp32s3_16mb.csv"

@@ -25,3 +25,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=32000
 
 # Enable touch support (ESP32-S3-LCD-EV-Board typically has touch)
 CONFIG_SDL_BSP_TOUCH_ENABLE=y
+
+# Custom partition table for assets
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_esp32s3_16mb.csv"

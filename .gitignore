@@ -1,0 +1,9 @@
+
+build*/
+managed_components/
+
+logs/
+support/
+
+sdkconfig
+

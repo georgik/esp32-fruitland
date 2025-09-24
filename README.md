@@ -14,11 +14,21 @@
 
 ## 🚀 Quick Start
 
-### Prerequisites
+### 🌐 Web-based Flashing (Easiest)
+
+Flash ESP32-Fruitland directly from your browser - no software installation required!
+
+[![Try it with ESP Launchpad](https://espressif.github.io/esp-launchpad/assets/try_with_launchpad.png)](https://georgik.github.io/esp32-fruitland/?flashConfigURL=https://georgik.github.io/esp32-fruitland/config/config.toml)
+
+**Requirements**: Chrome/Edge browser + ESP32 board with PSRAM + USB cable
+
+### 🔧 Build from Source
+
+**Prerequisites**:
 - **PSRAM Required**: This game requires PSRAM for asset storage and framebuffers
 - **LittleFS Assets**: Game assets are stored in LittleFS partition for efficient access
 
-### Build and Flash
+**Build and Flash**:
 ```bash
 # Configure for ESP32-S3-BOX (recommended - has PSRAM)
 idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults.esp-box-3" build flash monitor
@@ -184,5 +194,3 @@ cp sdkconfig sdkconfig.defaults.my_custom_board
 ```
 
 **CLion:** Project Settings → CMake → CMake options: `-D SDKCONFIG_DEFAULTS=sdkconfig.defaults.m5_atom_s3`
-
-
