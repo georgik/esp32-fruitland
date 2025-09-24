@@ -43,3 +43,7 @@ dependencies:
   idf:
     version: '>=5.5.0'
   joltwallet/littlefs: ^1.20.1
+  espressif/usb_host_hid:
+    matches:
+    - if: $CONFIG{IDF_TARGET_ESP32P4} == True
+    version: '*'

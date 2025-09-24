@@ -44,13 +44,14 @@ idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults.m5stack_core_s3" build flash mo
 - **🍎 Fruit Collection**: Catch different types of fruits for points
 - **🎯 Obstacle Avoidance**: Navigate around falling hazards
 - **🏆 Score System**: Classic arcade scoring with high score tracking
-- **🎮 Responsive Controls**: Touch or button input depending on board capabilities
+- **🎮 Responsive Controls**: Touch, button, or USB keyboard input depending on board capabilities
+- **⌨️ USB Keyboard Support**: Full keyboard input on ESP32-P4 boards with USB host capability
 
 ### Alternative: Using ESPBrew
 ```bash
 # Multi-board build manager with TUI (PSRAM boards only)
-espbrew .  # Interactive mode - select boards and press 'b'
-espbrew --cli-only .  # Automatic mode - builds all detected PSRAM boards
+espbrew # Interactive mode - select boards and press 'b'
+espbrew --cli-only  # Automatic mode - builds all detected PSRAM boards
 ```
 
 **ESPBrew** automatically detects board configurations, but only PSRAM-enabled boards will work:
@@ -103,15 +104,15 @@ idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults.esp-box-3" build flash monitor
 
 ### ✅ Compatible Boards (PSRAM Available)
 
-| Board | Architecture | Display | PSRAM | Fruitland Status |
-|-------|-------------|---------|-------|------------------|
-| `esp_box_3` | ESP32-S3 (Xtensa) | 320×240 ILI9341 | OCTAL | 🍎 **RECOMMENDED** |
-| `m5stack_core_s3` | ESP32-S3 (Xtensa) | 320×240 ILI9341 | QUAD | ✅ **Compatible** |
-| `m5stack_tab5` | **ESP32-P4 (RISC-V)** | 1280×720 IPS via MIPI-DSI | 32MB | ✅ **Compatible** |
-| `esp32_p4_function_ev` | **ESP32-P4 (RISC-V)** | up to 1280×800 | 32MB | ✅ **Compatible** |
-| `esp32_s3_lcd_ev` | ESP32-S3 (Xtensa) | Multiple LCD types | 16MB OCTAL | ✅ **Compatible** |
-| `esp32_s3_eye` | ESP32-S3 (Xtensa) | 240×240 circular | 8MB OCTAL | ✅ **Compatible** |
-| `esp32_s3_korvo_2` | ESP32-S3 (Xtensa) | LCD + Camera | OCTAL | ✅ **Compatible** |
+| Board | Architecture | Display | PSRAM | Input Support | Fruitland Status |
+|-------|-------------|---------|-------|---------------|------------------|
+| `esp_box_3` | ESP32-S3 (Xtensa) | 320×240 ILI9341 | OCTAL | Touch | 🍎 **RECOMMENDED** |
+| `m5stack_core_s3` | ESP32-S3 (Xtensa) | 320×240 ILI9341 | QUAD | Touch | ✅ **Compatible** |
+| `m5stack_tab5` | **ESP32-P4 (RISC-V)** | 1280×720 IPS via MIPI-DSI | 32MB | **⌨️ USB Keyboard + Touch** | ✅ **Compatible** |
+| `esp32_p4_function_ev` | **ESP32-P4 (RISC-V)** | up to 1280×800 | 32MB | **⌨️ USB Keyboard + Touch** | ✅ **Compatible** |
+| `esp32_s3_lcd_ev` | ESP32-S3 (Xtensa) | Multiple LCD types | 16MB OCTAL | Touch | ✅ **Compatible** |
+| `esp32_s3_eye` | ESP32-S3 (Xtensa) | 240×240 circular | 8MB OCTAL | Touch | ✅ **Compatible** |
+| `esp32_s3_korvo_2` | ESP32-S3 (Xtensa) | LCD + Camera | OCTAL | Touch | ✅ **Compatible** |
 
 ### ❌ Incompatible Boards (No PSRAM)
 
@@ -137,6 +138,31 @@ idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults.esp-box-3" build flash monitor
 - **`fruit.dat`**: Game data including level configurations
 
 Assets are automatically packed into the LittleFS partition during the build process and mounted at `/assets/` at runtime.
+
+## ⌨️ USB Keyboard Support (ESP32-P4 Only)
+
+**Fruitland** includes full USB keyboard support for ESP32-P4 boards with USB host capability:
+
+### 🎮 Keyboard Controls
+- **Arrow Keys**: Move player character
+- **WASD Keys**: Alternative movement controls
+- **Space**: Action/Select
+- **Enter**: Pause/Menu
+- **ESC**: Quit game
+- **Function Keys**: Debug features (F1-F12)
+
+### 🔌 Hardware Requirements
+- **ESP32-P4 Board**: M5Stack Tab5, ESP32-P4 Function EV Board
+- **USB Keyboard**: Any standard USB keyboard (wired or wireless with USB receiver)
+- **USB Host Port**: Connected to the board's USB host connector
+
+### ⚡ Features
+- **Real-time Input**: Event-driven keyboard handling with minimal latency
+- **Auto-detection**: Automatic keyboard detection and initialization
+- **Multi-key Support**: Simultaneous key press detection
+- **SDL Integration**: Seamless translation of USB HID events to SDL keyboard events
+
+> **Note**: Keyboard support is automatically enabled on ESP32-P4 boards. For other boards, standard touch/button controls remain available.
 
 ## 🏢 Architecture Highlights
 
@@ -189,8 +215,8 @@ cp sdkconfig sdkconfig.defaults.my_custom_board
 **VS Code ESP-IDF Extension:**
 ```json
 {
-    "idf.cmakeCompilerArgs": ["-D", "SDKCONFIG_DEFAULTS=sdkconfig.defaults.m5_atom_s3"]
+    "idf.cmakeCompilerArgs": ["-D", "SDKCONFIG_DEFAULTS=sdkconfig.defaults.m5stack_core_s3"]
 }
 ```
 
-**CLion:** Project Settings → CMake → CMake options: `-D SDKCONFIG_DEFAULTS=sdkconfig.defaults.m5_atom_s3`
+**CLion:** Project Settings → CMake → CMake options: `-D SDKCONFIG_DEFAULTS=sdkconfig.defaults.m5stack_core_s3`

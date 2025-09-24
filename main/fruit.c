@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "filesystem.h"
+#include "keyboard.h"
 
 // Game constants
 #define GAME_WIDTH 256
@@ -450,6 +451,13 @@ int game() {
                 }
             }
             
+            // Process USB HID keyboard events (ESP32-P4 only)
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+            if (is_keyboard_available()) {
+                process_keyboard();
+            }
+#endif
+            
             keyboard_state = SDL_GetKeyboardState(NULL);
             
             // Clear player position
@@ -497,7 +505,7 @@ int game() {
 }
 
 void* sdl_thread(void* args) {
-    printf("Fruit Land on ESP32-S3-BOX\n");
+    printf("Fruit Land on ESP32\n");
 
     // Initialize filesystem first
     SDL_InitFS();
@@ -507,6 +515,17 @@ void* sdl_thread(void* args) {
         return NULL;
     }
     printf("SDL initialized successfully\n");
+
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+    // Initialize USB HID keyboard on ESP32-P4
+    printf("Initializing USB HID keyboard...\n");
+    esp_err_t keyboard_ret = init_keyboard();
+    if (keyboard_ret == ESP_OK) {
+        printf("USB HID keyboard initialized successfully\n");
+    } else if (keyboard_ret != ESP_ERR_NOT_SUPPORTED) {
+        printf("Warning: USB HID keyboard initialization failed: %s\n", esp_err_to_name(keyboard_ret));
+    }
+#endif
 
     // Get display dimensions
     const SDL_DisplayMode *display_mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
@@ -549,6 +568,9 @@ void* sdl_thread(void* args) {
     }
 
     // Cleanup
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+    cleanup_keyboard();
+#endif
     if (intro_texture) SDL_DestroyTexture(intro_texture);
     if (patterns_texture) SDL_DestroyTexture(patterns_texture);
     if (game_surface) SDL_DestroyTexture(game_surface);
