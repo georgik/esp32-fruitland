@@ -1,0 +1,30 @@
+menu "ESP32-Fruitland Configuration"
+
+    config FRUITLAND_USB_KEYBOARD_SUPPORT
+        bool "Enable USB HID Keyboard Support"
+        default y if IDF_TARGET_ESP32P4
+        default n
+        help
+            Enable USB HID keyboard support for game input.
+            This requires USB host capabilities and is automatically
+            enabled for ESP32-P4 which has built-in USB host support.
+            
+            This feature allows connecting USB keyboards directly to
+            the ESP32 board for game control input.
+
+    config FRUITLAND_ACCELEROMETER_INPUT
+        bool "Enable Accelerometer Input Support"
+        default y if SDL_BSP_ESP_BOX_3
+        default n
+        help
+            Enable accelerometer-based motion control for game input.
+            This uses the onboard ICM42670 6-axis accelerometer to detect
+            device tilt and translate it to directional movement commands.
+            
+            Automatically enabled for ESP32-S3-BOX-3 which has the
+            ICM42670 accelerometer sensor built-in.
+            
+            This feature allows playing the game by tilting the device
+            in the desired movement direction.
+
+endmenu

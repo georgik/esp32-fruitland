@@ -3,5 +3,6 @@ idf_component_register(
         "fruit.c"
         "filesystem.c"
         "keyboard.c"
+        "accelerometer.c"
     INCLUDE_DIRS "."
 )

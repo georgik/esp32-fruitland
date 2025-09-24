@@ -45,5 +45,5 @@ dependencies:
   joltwallet/littlefs: ^1.20.1
   espressif/usb_host_hid:
     matches:
-    - if: $CONFIG{IDF_TARGET_ESP32P4} == True
+    - if: $CONFIG{FRUITLAND_USB_KEYBOARD_SUPPORT} == True
     version: '*'

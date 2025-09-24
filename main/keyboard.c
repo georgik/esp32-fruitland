@@ -19,15 +19,15 @@
 #include "esp_log.h"
 #include "driver/gpio.h"
 
+static const char *TAG = "keyboard";
+
 #ifdef CONFIG_IDF_TARGET_ESP32P4
 
 #include "usb/usb_host.h"
 #include "usb/hid_host.h"
 #include "usb/hid_usage_keyboard.h"
 #include "SDL_internal.h"
-#include "events/SDL_keyboard_c.h"
-
-static const char *TAG = "keyboard";
+#include "events/SDL_keyboard_c.h";
 
 // USB and HID event handling
 static QueueHandle_t app_event_queue = NULL;

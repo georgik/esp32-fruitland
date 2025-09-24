@@ -11,10 +11,13 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "SDL3/SDL.h"
+#include "sdkconfig.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#ifdef CONFIG_FRUITLAND_USB_KEYBOARD_SUPPORT
 
 /**
  * @brief Initialize USB HID keyboard support
@@ -47,6 +50,8 @@ bool is_keyboard_available(void);
  * Stops USB host stack and frees resources
  */
 void cleanup_keyboard(void);
+
+#endif // CONFIG_FRUITLAND_USB_KEYBOARD_SUPPORT
 
 #ifdef __cplusplus
 }
