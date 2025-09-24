@@ -17,6 +17,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "filesystem.h"
 #include "keyboard.h"
 #include "accelerometer.h"
@@ -33,6 +34,11 @@
 #define MAX_OBJECTS 16
 #define HI_ENTRIES 8
 #define NAME_LENGTH 9
+
+// Performance constants
+#define TARGET_FPS 60
+#define FRAME_TIME_US (1000000 / TARGET_FPS)
+#define TILE_SIZE 16  // For dirty rectangle optimization
 
 // Direction constants
 #define UP    1
@@ -85,11 +91,28 @@ static int dead;
 static int freeze_enemy;
 static int game_running = 1;
 
+// Performance tracking
+static uint64_t last_frame_time = 0;
+static uint64_t frame_count = 0;
+static bool full_redraw_needed = true;
+
+// Performance tracking for optimization
+static uint64_t total_render_time = 0;
+static uint64_t total_spi_saved = 0;
+
 // Input state
 static const bool *keyboard_state;
 
 // Forward declarations
 void print_stats(void);
+
+void get_item(void);
+
+bool is_passable(int tile_type);
+
+void teleport(void);
+
+void turn_screen(void);
 
 // Dual-core rendering system
 typedef struct {
@@ -128,9 +151,53 @@ typedef struct {
     } data;
 } render_command_t;
 
-// Dirty rectangle management
+// Dirty rectangle management with optimization and safety margins
 void add_dirty_rect(float x, float y, float w, float h) {
     if (dirty_rect_count < MAX_DIRTY_RECTS) {
+        // Add safety margins to prevent visual artifacts
+        const int SAFETY_MARGIN = 2;
+        x = x - SAFETY_MARGIN;
+        y = y - SAFETY_MARGIN;
+        w = w + (SAFETY_MARGIN * 2);
+        h = h + (SAFETY_MARGIN * 2);
+
+        // Clamp to screen boundaries
+        if (x < 0) {
+            w += x;
+            x = 0;
+        }
+        if (y < 0) {
+            h += y;
+            y = 0;
+        }
+        if (x + w > GAME_WIDTH) w = GAME_WIDTH - x;
+        if (y + h > GAME_HEIGHT) h = GAME_HEIGHT - y;
+
+        // Align to tile boundaries for better performance
+        x = (int) (x / TILE_SIZE) * TILE_SIZE;
+        y = (int) (y / TILE_SIZE) * TILE_SIZE;
+        w = ((int) ((x + w) / TILE_SIZE) + 1) * TILE_SIZE - x;
+        h = ((int) ((y + h) / TILE_SIZE) + 1) * TILE_SIZE - y;
+
+        // Check for overlap with existing dirty rects to avoid duplication
+        for (int i = 0; i < dirty_rect_count; i++) {
+            SDL_FRect *existing = &dirty_rects[i].rect;
+            if (x < existing->x + existing->w && x + w > existing->x &&
+                y < existing->y + existing->h && y + h > existing->y) {
+                // Merge overlapping rectangles
+                float min_x = (x < existing->x) ? x : existing->x;
+                float min_y = (y < existing->y) ? y : existing->y;
+                float max_x = ((x + w) > (existing->x + existing->w)) ? (x + w) : (existing->x + existing->w);
+                float max_y = ((y + h) > (existing->y + existing->h)) ? (y + h) : (existing->y + existing->h);
+
+                existing->x = min_x;
+                existing->y = min_y;
+                existing->w = max_x - min_x;
+                existing->h = max_y - min_y;
+                return;
+            }
+        }
+
         dirty_rects[dirty_rect_count].rect = (SDL_FRect){x, y, w, h};
         dirty_rects[dirty_rect_count].needs_update = true;
         dirty_rect_count++;
@@ -139,6 +206,34 @@ void add_dirty_rect(float x, float y, float w, float h) {
 
 void clear_dirty_rects() {
     dirty_rect_count = 0;
+}
+
+// Performance timing functions
+uint64_t get_time_us() {
+    return esp_timer_get_time();
+}
+
+void wait_for_frame_time() {
+    uint64_t current_time = get_time_us();
+    uint64_t elapsed = current_time - last_frame_time;
+
+    if (elapsed < FRAME_TIME_US) {
+        uint64_t sleep_time = FRAME_TIME_US - elapsed;
+        if (sleep_time > 1000) {
+            // Only sleep if > 1ms
+            vTaskDelay(pdMS_TO_TICKS(sleep_time / 1000));
+        }
+    }
+
+    last_frame_time = get_time_us();
+    frame_count++;
+
+    // Log performance every 300 frames (5 seconds at 60fps)
+    if (frame_count % 300 == 0) {
+        uint64_t avg_frame_time = total_render_time / (frame_count > 0 ? frame_count : 1);
+        ESP_LOGI("perf", "Frame %llu, dirty rects: %d, avg frame time: %llu us, SPI bytes saved: %llu",
+                 frame_count, dirty_rect_count, avg_frame_time, total_spi_saved);
+    }
 }
 
 // Send render command to rendering core
@@ -454,12 +549,17 @@ void print_level() {
         draw_level();
         draw_texts();
         level_drawn = true;
+
+        // Force full redraw on level change for dirty rectangle system
+        full_redraw_needed = true;
+        clear_dirty_rects();
     }
 }
 
 // Reset level drawing flag for new level
 void reset_level_drawing() {
     level_drawn = false;
+    full_redraw_needed = true; // Force full redraw for new level
 }
 
 // Show intro screen
@@ -559,6 +659,143 @@ void init_objects() {
     }
 }
 
+// Teleport player to the other teleporter location
+void teleport() {
+    // Clear current player position in level data
+    level_data[objects[0].dx + objects[0].dy * LEVEL_WIDTH] = 0;
+
+    // Find the other teleporter (tile type 6)
+    int teleporter_found = 0;
+    for (int c = 0; c < LEVEL_WIDTH * LEVEL_HEIGHT; c++) {
+        if (level_data[c] == 6) {
+            // Found the destination teleporter
+            objects[0].dx = c % LEVEL_WIDTH;
+            objects[0].dy = c / LEVEL_WIDTH;
+            objects[0].x = (c % LEVEL_WIDTH) * 16 + 8;
+            objects[0].y = (c / LEVEL_WIDTH) * 16 + 8;
+
+            // Clear the destination teleporter as well
+            level_data[c] = 0;
+
+            teleporter_found = 1;
+            ESP_LOGI("game", "Teleported to position (%d, %d)", objects[0].dx, objects[0].dy);
+            break;
+        }
+    }
+
+    if (!teleporter_found) {
+        ESP_LOGW("game", "No destination teleporter found!");
+    }
+}
+
+// Turn screen upside down (flip vertically) based on original game
+void turn_screen() {
+    ESP_LOGI("game", "Screen flip activated!");
+
+    // Clear player position in level data
+    level_data[objects[0].dx + objects[0].dy * LEVEL_WIDTH] = 0;
+
+    // Flip the level data vertically
+    for (int y = 0; y < LEVEL_HEIGHT / 2; y++) {
+        for (int x = 0; x < LEVEL_WIDTH; x++) {
+            int top_pos = y * LEVEL_WIDTH + x;
+            int bottom_pos = (LEVEL_HEIGHT - 1 - y) * LEVEL_WIDTH + x;
+
+            // Swap tiles
+            int temp = level_data[top_pos];
+            level_data[top_pos] = level_data[bottom_pos];
+            level_data[bottom_pos] = temp;
+        }
+    }
+
+    // Flip all objects (including player) vertically
+    for (int c = 0; c < MAX_OBJECTS; c++) {
+        if (objects[c].l) {
+            objects[c].dy = LEVEL_HEIGHT - 1 - objects[c].dy;
+            objects[c].y = (LEVEL_HEIGHT - 1) * 16 + 8 - (objects[c].y - 8);
+        }
+    }
+
+    // Force level redraw
+    reset_level_drawing();
+    print_level();
+}
+
+// Check if a tile type is passable for the player
+bool is_passable(int tile_type) {
+    switch (tile_type) {
+        case 0: // Empty space
+        case 1: // Small dot/pellet
+        case 4: // Fruit
+        case 5: // Bonus item
+        case 6: // Teleporter
+        case 7: // Time bonus
+        case 8: // Screen flip item
+        case 9: // Extra life
+        case 10: // Freeze enemies item
+        case 12: // Death trap (passable but deadly)
+            return true;
+        case 2: // Wall
+        case 3: // Rock/movable block
+        case 11: // Block (pushable in original, simplified here)
+        case 13: // Enemy (vertical)
+        case 14: // Enemy (horizontal)
+        case 80: // Special wall/rock state
+        case 81: // Special state
+        default:
+            return false;
+    }
+}
+
+// Handle item collection based on original game mechanics
+void get_item() {
+    int item = level_data[objects[0].dx + objects[0].dy * LEVEL_WIDTH];
+    level_data[objects[0].dx + objects[0].dy * LEVEL_WIDTH] = 0;
+
+    switch (item) {
+        case 1: // Small dot/pellet
+            score += 10;
+            break;
+        case 4: // Fruit
+            fruit--;
+            score += 500;
+            ESP_LOGI("game", "Fruit collected! Remaining: %d, Score: %d", fruit, score);
+            break;
+        case 5: // Bonus item
+            score += 100;
+            ESP_LOGI("game", "Bonus collected! Score: %d", score);
+            break;
+        case 6: // Teleporter
+            teleport();
+            score += 200;
+            break;
+        case 7: // Time bonus
+            av_time += 50; // Add extra time (reduced from original 500 for balance)
+            ESP_LOGI("game", "Time bonus! Extra time: %d", av_time);
+            break;
+        case 8: // Screen flip
+            turn_screen();
+            score += 300;
+            break;
+        case 9: // Extra life
+            lives++;
+            ESP_LOGI("game", "Extra life! Lives: %d", lives);
+            break;
+        case 10: // Freeze enemies
+            freeze_enemy = 300; // 5 seconds at 60fps (reduced from original 500)
+            score += 150;
+            ESP_LOGI("game", "Enemy freeze activated! Duration: %d frames", freeze_enemy);
+            break;
+        case 12: // Death trap
+            dead = 1;
+            ESP_LOGI("game", "Death trap hit!");
+            break;
+        default:
+            // No item or unknown item - do nothing
+            break;
+    }
+}
+
 // Render game objects with optimized rendering
 void print_objects() {
     SDL_SetRenderTarget(renderer, game_surface);
@@ -610,50 +847,43 @@ void move_player() {
             else if (objects[0].dir == RIGHT) objects[0].dx++;
             objects[0].dir = 0;
 
-            // Check for item pickup
-            int item = level_data[objects[0].dx + objects[0].dy * LEVEL_WIDTH];
-            if (item == 4) {
-                // Fruit
-                fruit--;
-                score += 500;
-                level_data[objects[0].dx + objects[0].dy * LEVEL_WIDTH] = 0;
-            }
+            // Call get_item to handle all collectible items
+            get_item();
         }
         return;
     }
 
-    // Start new movement
+    // Start new movement - check if target tile is passable
     if (keyboard_state[SDL_SCANCODE_UP] && objects[0].dy > 0) {
         int target = level_data[objects[0].dx + (objects[0].dy - 1) * LEVEL_WIDTH];
-        if (target == 0 || target == 4) {
-            // Empty or fruit
+        if (is_passable(target)) {
             objects[0].dir = UP;
             objects[0].step = 16;
-            objects[0].sx = 0; // Fixed: start at sprite 0, not -16
+            objects[0].sx = 0;
             objects[0].sy = 64;
         }
     } else if (keyboard_state[SDL_SCANCODE_DOWN] && objects[0].dy < LEVEL_HEIGHT - 1) {
         int target = level_data[objects[0].dx + (objects[0].dy + 1) * LEVEL_WIDTH];
-        if (target == 0 || target == 4) {
+        if (is_passable(target)) {
             objects[0].dir = DOWN;
             objects[0].step = 16;
-            objects[0].sx = 0; // Fixed: start at sprite 0, not -16
+            objects[0].sx = 0;
             objects[0].sy = 80;
         }
     } else if (keyboard_state[SDL_SCANCODE_LEFT] && objects[0].dx > 0) {
         int target = level_data[objects[0].dx - 1 + objects[0].dy * LEVEL_WIDTH];
-        if (target == 0 || target == 4) {
+        if (is_passable(target)) {
             objects[0].dir = LEFT;
             objects[0].step = 16;
-            objects[0].sx = 0; // Fixed: start at sprite 0, not -16
+            objects[0].sx = 0;
             objects[0].sy = 32;
         }
     } else if (keyboard_state[SDL_SCANCODE_RIGHT] && objects[0].dx < LEVEL_WIDTH - 1) {
         int target = level_data[objects[0].dx + 1 + objects[0].dy * LEVEL_WIDTH];
-        if (target == 0 || target == 4) {
+        if (is_passable(target)) {
             objects[0].dir = RIGHT;
             objects[0].step = 16;
-            objects[0].sx = 0; // Fixed: start at sprite 0, not -16
+            objects[0].sx = 0;
             objects[0].sy = 48;
         }
     }
@@ -706,8 +936,13 @@ int game() {
 #endif
         }
 
-        // Game loop for current level
+        // Initialize performance tracking for new level
+        last_frame_time = get_time_us();
+
+        // Game loop for current level - optimized with dirty rectangles
         while (fruit > 0 && av_time > 0 && !dead) {
+            uint64_t frame_start = get_time_us();
+
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) {
@@ -722,52 +957,56 @@ int game() {
             }
 #endif
 
-            // Process accelerometer input events (less frequently to save CPU)
+            // Process accelerometer input events (reduced frequency for performance)
 #ifdef CONFIG_FRUITLAND_ACCELEROMETER_INPUT
             static int accel_counter = 0;
-            if (is_accelerometer_available() && (++accel_counter >= 3)) {
+            if (is_accelerometer_available() && (++accel_counter >= 4)) {
                 process_accelerometer();
                 accel_counter = 0;
             }
 #endif
 
             keyboard_state = SDL_GetKeyboardState(NULL);
-            // Store previous stats for change detection
+
+            // Store previous state for change detection
             static int prev_score = -1, prev_time = -1, prev_level = -1, prev_lives = -1;
             static int prev_player_x = -1, prev_player_y = -1;
             static bool first_render = true;
 
+            // Update game state
             move_player();
             av_time--;
 
-            // Check if anything changed that requires rendering
+            // Detect what changed for optimized rendering
             bool player_moved = (objects[0].x != prev_player_x || objects[0].y != prev_player_y);
             bool stats_changed = (score != prev_score || av_time != prev_time ||
                                   level != prev_level || lives != prev_lives);
+            bool needs_render = player_moved || stats_changed || full_redraw_needed || first_render;
 
-            // Direct single-core rendering for stability
-            if (player_moved || stats_changed) {
+            // Only render if something actually changed
+            if (needs_render) {
                 SDL_SetRenderTarget(renderer, game_surface);
 
+                // Handle player movement
                 if (player_moved || first_render) {
                     if (!first_render && prev_player_x >= 0) {
-                        // Clear player's old position (but not on first render)
+                        // Clear player's old position
                         SDL_FRect clear_rect = {prev_player_x, prev_player_y, 16, 16};
                         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
                         SDL_RenderFillRect(renderer, &clear_rect);
                     }
 
-                    // Draw player at current position
+                    // Draw player at new position
                     SDL_FRect src_rect = {objects[0].sx, objects[0].sy, 16, 16};
                     SDL_FRect dst_rect = {objects[0].x, objects[0].y, 16, 16};
                     SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
 
                     prev_player_x = objects[0].x;
                     prev_player_y = objects[0].y;
-                    first_render = false;
                 }
 
-                if (stats_changed) {
+                // Handle stats changes
+                if (stats_changed || first_render) {
                     print_stats();
                     prev_score = score;
                     prev_time = av_time;
@@ -775,29 +1014,23 @@ int game() {
                     prev_lives = lives;
                 }
 
-                // Render to screen
+                // Simple full-screen rendering for stability
                 SDL_SetRenderTarget(renderer, NULL);
                 SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
                 SDL_RenderClear(renderer);
-
                 SDL_FRect dst_rect = {cached_offset_x, cached_offset_y, cached_scaled_w, cached_scaled_h};
                 SDL_RenderTexture(renderer, game_surface, NULL, &dst_rect);
                 SDL_RenderPresent(renderer);
+
+                first_render = false;
             }
 
-            // Non-blocking frame rate control using timestamps
-            static uint32_t last_frame_time = 0;
-            uint32_t current_time = SDL_GetTicks();
-            const uint32_t target_frame_time = 33; // ~30 FPS (33ms per frame)
+            // Track frame rendering time for performance monitoring
+            uint64_t frame_end = get_time_us();
+            total_render_time += (frame_end - frame_start);
 
-            if (current_time - last_frame_time >= target_frame_time) {
-                last_frame_time = current_time;
-                // Continue with next frame
-            } else {
-                // Yield CPU to other tasks without blocking
-                vTaskDelay(1);
-                continue;
-            }
+            // Intelligent frame rate control
+            wait_for_frame_time();
         }
 
         if (av_time == 0 || dead) {
