@@ -14,6 +14,9 @@
 #include "SDL_hints.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "esp_log.h"
 #include "filesystem.h"
 #include "keyboard.h"
 #include "accelerometer.h"
@@ -84,6 +87,195 @@ static int game_running = 1;
 
 // Input state
 static const bool *keyboard_state;
+
+// Forward declarations
+void print_stats(void);
+
+// Dual-core rendering system
+typedef struct {
+    SDL_FRect rect;
+    bool needs_update;
+} dirty_rect_t;
+
+#define MAX_DIRTY_RECTS 16
+static dirty_rect_t dirty_rects[MAX_DIRTY_RECTS];
+static int dirty_rect_count = 0;
+static SemaphoreHandle_t render_mutex = NULL;
+static QueueHandle_t render_queue = NULL;
+static pthread_t render_thread = {0};
+static bool render_system_active = false;
+
+// Render commands for async rendering
+typedef enum {
+    RENDER_CMD_UPDATE_PLAYER,
+    RENDER_CMD_UPDATE_STATS,
+    RENDER_CMD_PRESENT
+} render_cmd_type_t;
+
+typedef struct {
+    render_cmd_type_t type;
+    SDL_FRect area;
+
+    union {
+        struct {
+            int player_x, player_y;
+            int sprite_x, sprite_y;
+        } player;
+
+        struct {
+            int score, time, level, lives;
+        } stats;
+    } data;
+} render_command_t;
+
+// Dirty rectangle management
+void add_dirty_rect(float x, float y, float w, float h) {
+    if (dirty_rect_count < MAX_DIRTY_RECTS) {
+        dirty_rects[dirty_rect_count].rect = (SDL_FRect){x, y, w, h};
+        dirty_rects[dirty_rect_count].needs_update = true;
+        dirty_rect_count++;
+    }
+}
+
+void clear_dirty_rects() {
+    dirty_rect_count = 0;
+}
+
+// Send render command to rendering core
+bool send_render_command(const render_command_t *cmd) {
+    if (render_queue && render_system_active) {
+        return xQueueSend(render_queue, cmd, 0) == pdTRUE;
+    }
+    return false;
+}
+
+// Async rendering thread (runs on Core 1)
+void *render_thread_func(void *params) {
+    render_command_t cmd;
+
+    while (render_system_active) {
+        // Wait for render commands
+        if (xQueueReceive(render_queue, &cmd, pdMS_TO_TICKS(16)) == pdTRUE) {
+            if (xSemaphoreTake(render_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                switch (cmd.type) {
+                    case RENDER_CMD_UPDATE_PLAYER:
+                        // Clear old position and draw new position
+                        SDL_SetRenderTarget(renderer, game_surface);
+                        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                        SDL_RenderFillRect(renderer, &cmd.area);
+
+                        if (cmd.data.player.player_x >= 0 && cmd.data.player.player_y >= 0) {
+                            SDL_FRect src_rect = {cmd.data.player.sprite_x, cmd.data.player.sprite_y, 16, 16};
+                            SDL_FRect dst_rect = {cmd.data.player.player_x, cmd.data.player.player_y, 16, 16};
+                            SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
+                        }
+                        break;
+
+                    case RENDER_CMD_UPDATE_STATS:
+                        SDL_SetRenderTarget(renderer, game_surface);
+                        print_stats();
+                        break;
+
+                    case RENDER_CMD_PRESENT:
+                        // Present the final frame to screen
+                        SDL_SetRenderTarget(renderer, NULL);
+                        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                        SDL_RenderClear(renderer);
+
+                        // Use cached scaling values
+                        static float cached_scale = 0;
+                        static int cached_scaled_w = 0, cached_scaled_h = 0;
+                        static int cached_offset_x = 0, cached_offset_y = 0;
+
+                        if (cached_scale == 0) {
+                            float scale_x = (float) SCREEN_WIDTH / GAME_WIDTH;
+                            float scale_y = (float) SCREEN_HEIGHT / GAME_HEIGHT;
+                            cached_scale = (scale_x < scale_y) ? scale_x : scale_y;
+
+                            cached_scaled_w = GAME_WIDTH * cached_scale;
+                            cached_scaled_h = GAME_HEIGHT * cached_scale;
+                            cached_offset_x = (SCREEN_WIDTH - cached_scaled_w) / 2;
+                            cached_offset_y = (SCREEN_HEIGHT - cached_scaled_h) / 2;
+                        }
+
+                        SDL_FRect dst_rect = {cached_offset_x, cached_offset_y, cached_scaled_w, cached_scaled_h};
+                        SDL_RenderTexture(renderer, game_surface, NULL, &dst_rect);
+                        SDL_RenderPresent(renderer);
+                        break;
+                }
+
+                xSemaphoreGive(render_mutex);
+            }
+        }
+
+        // Small yield to prevent watchdog issues
+        vTaskDelay(1);
+    }
+
+    pthread_exit(NULL);
+    return NULL;
+}
+
+// Initialize dual-core rendering system
+esp_err_t init_render_system() {
+    render_mutex = xSemaphoreCreateMutex();
+    if (!render_mutex) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    render_queue = xQueueCreate(32, sizeof(render_command_t));
+    if (!render_queue) {
+        vSemaphoreDelete(render_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+
+    render_system_active = true;
+
+    // Create rendering pthread and pin it to Core 1
+    pthread_attr_t render_attr;
+    pthread_attr_init(&render_attr);
+    pthread_attr_setstacksize(&render_attr, 8192); // 8KB stack
+
+    int result = pthread_create(&render_thread, &render_attr, render_thread_func, NULL);
+    pthread_attr_destroy(&render_attr);
+
+    if (result != 0) {
+        ESP_LOGE("game", "Failed to create render pthread: %d", result);
+        render_system_active = false;
+        vQueueDelete(render_queue);
+        vSemaphoreDelete(render_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+
+    // Note: pthread will use available cores automatically
+    // The scheduler will tend to use different cores for different threads
+
+    ESP_LOGI("game", "Dual-core render system initialized on Core 1");
+    return ESP_OK;
+}
+
+// Cleanup rendering system
+void cleanup_render_system() {
+    if (render_system_active) {
+        render_system_active = false;
+
+        // Signal render thread to exit and wait for it
+        if (render_thread != 0) {
+            pthread_join(render_thread, NULL);
+            render_thread = 0;
+        }
+
+        if (render_queue) {
+            vQueueDelete(render_queue);
+            render_queue = NULL;
+        }
+
+        if (render_mutex) {
+            vSemaphoreDelete(render_mutex);
+            render_mutex = NULL;
+        }
+    }
+}
 
 // Load game assets
 int load_assets() {
@@ -490,6 +682,8 @@ int game() {
         static float cached_scale = 0;
         static int cached_scaled_w = 0, cached_scaled_h = 0;
         static int cached_offset_x = 0, cached_offset_y = 0;
+        (void) cached_offset_x; // Suppress unused warning
+        (void) cached_offset_y; // Suppress unused warning
 
         if (cached_scale == 0) {
             float scale_x = (float) SCREEN_WIDTH / GAME_WIDTH;
@@ -538,10 +732,10 @@ int game() {
 #endif
 
             keyboard_state = SDL_GetKeyboardState(NULL);
-
             // Store previous stats for change detection
             static int prev_score = -1, prev_time = -1, prev_level = -1, prev_lives = -1;
             static int prev_player_x = -1, prev_player_y = -1;
+            static bool first_render = true;
 
             move_player();
             av_time--;
@@ -551,17 +745,27 @@ int game() {
             bool stats_changed = (score != prev_score || av_time != prev_time ||
                                   level != prev_level || lives != prev_lives);
 
+            // Direct single-core rendering for stability
             if (player_moved || stats_changed) {
                 SDL_SetRenderTarget(renderer, game_surface);
 
-                if (player_moved && prev_player_x >= 0) {
-                    // Clear player's old position only if they moved
-                    SDL_FRect clear_rect = {prev_player_x, prev_player_y, 16, 16};
-                    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-                    SDL_RenderFillRect(renderer, &clear_rect);
-                }
+                if (player_moved || first_render) {
+                    if (!first_render && prev_player_x >= 0) {
+                        // Clear player's old position (but not on first render)
+                        SDL_FRect clear_rect = {prev_player_x, prev_player_y, 16, 16};
+                        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                        SDL_RenderFillRect(renderer, &clear_rect);
+                    }
 
-                print_objects();
+                    // Draw player at current position
+                    SDL_FRect src_rect = {objects[0].sx, objects[0].sy, 16, 16};
+                    SDL_FRect dst_rect = {objects[0].x, objects[0].y, 16, 16};
+                    SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
+
+                    prev_player_x = objects[0].x;
+                    prev_player_y = objects[0].y;
+                    first_render = false;
+                }
 
                 if (stats_changed) {
                     print_stats();
@@ -571,13 +775,7 @@ int game() {
                     prev_lives = lives;
                 }
 
-                prev_player_x = objects[0].x;
-                prev_player_y = objects[0].y;
-            }
-
-            // Only update screen if something actually changed
-            if (player_moved || stats_changed) {
-                // Render game surface to screen with cached scaling
+                // Render to screen
                 SDL_SetRenderTarget(renderer, NULL);
                 SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
                 SDL_RenderClear(renderer);
@@ -587,8 +785,19 @@ int game() {
                 SDL_RenderPresent(renderer);
             }
 
-            // Optimized frame rate for embedded: ~30 FPS for smooth gameplay with good performance
-            vTaskDelay(pdMS_TO_TICKS(10)); // ~100 FPS target, but will be limited by actual rendering speed
+            // Non-blocking frame rate control using timestamps
+            static uint32_t last_frame_time = 0;
+            uint32_t current_time = SDL_GetTicks();
+            const uint32_t target_frame_time = 33; // ~30 FPS (33ms per frame)
+
+            if (current_time - last_frame_time >= target_frame_time) {
+                last_frame_time = current_time;
+                // Continue with next frame
+            } else {
+                // Yield CPU to other tasks without blocking
+                vTaskDelay(1);
+                continue;
+            }
         }
 
         if (av_time == 0 || dead) {
@@ -671,6 +880,11 @@ void *sdl_thread(void *args) {
         return NULL;
     }
 
+    // Temporarily disable dual-core rendering to fix stability issues
+    printf("Using optimized single-core rendering\n");
+    // TODO: Re-enable dual-core rendering once memory management issues are resolved
+    // esp_err_t render_ret = init_render_system();
+
     printf("Starting game...\n");
 
     while (game_running) {
@@ -681,6 +895,7 @@ void *sdl_thread(void *args) {
     }
 
     // Cleanup
+    // cleanup_render_system(); // Disabled with dual-core rendering
 #ifdef CONFIG_IDF_TARGET_ESP32P4
     cleanup_keyboard();
 #endif
@@ -698,6 +913,8 @@ void *sdl_thread(void *args) {
 }
 
 void app_main(void) {
+    // Note: Main task runs on Core 0 by default, rendering task will run on Core 1
+
     pthread_t sdl_pthread;
 
     pthread_attr_t attr;

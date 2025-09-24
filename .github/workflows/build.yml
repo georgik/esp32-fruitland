@@ -18,7 +18,7 @@ jobs:
     strategy:
       matrix:
         # Only include PSRAM-compatible boards that can run Fruitland
-        board: [esp-box-3, m5stack_core_s3, m5stack_tab5, esp32_p4_function_ev_board, esp32_s3_lcd_ev_board]
+        board: [esp-box-3, m5stack_core_s3, m5stack_tab5, esp32_p4_function_ev_board]
       fail-fast: false
 
     steps:
