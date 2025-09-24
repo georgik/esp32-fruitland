@@ -40,14 +40,19 @@
 // Performance constants - tile-based movement system
 #ifdef CONFIG_IDF_TARGET_ESP32P4
 #define TARGET_FPS 60  // Higher FPS possible on ESP32-P4
-#define TILE_MOVEMENT_DURATION_US 150000  // 0.15 seconds per tile movement (faster on P4)
+#define TILE_MOVEMENT_DURATION_US 100000  // 0.1 seconds per tile movement (much more responsive)
 #else
-#define TARGET_FPS 20  // Realistic FPS for ESP32-S3 hardware  
-#define TILE_MOVEMENT_DURATION_US 200000  // 0.2 seconds per tile movement
+#define TARGET_FPS 30  // Increased FPS for ESP32-S3 after RGB565 optimization
+#define TILE_MOVEMENT_DURATION_US 120000  // 0.12 seconds per tile movement (more responsive)
 #endif
 #define FRAME_TIME_US (1000000 / TARGET_FPS)
 #define TILE_SIZE 16  // 16x16 pixel tiles
 #define MOVEMENT_FRAMES (TILE_MOVEMENT_DURATION_US / FRAME_TIME_US)  // Frames per tile movement
+
+// Enhanced animation constants
+#define ANIMATION_FRAMES 4  // Number of walking animation frames per direction
+#define IDLE_ANIMATION_FRAMES 2  // Number of idle animation frames
+#define ANIMATION_SPEED_MS 100  // Milliseconds per animation frame (10 FPS animation)
 
 // Optimized buffer configuration for ESP32
 #define RENDER_BUFFER_HEIGHT 32  // Smaller chunks = less memory transfers
@@ -85,6 +90,10 @@ typedef struct OBJECT {
     int target_y; // target screen y position
     uint64_t movement_start_time; // when movement started (microseconds)
     bool is_moving; // true if currently moving between tiles
+    // Enhanced animation fields
+    int current_frame; // current animation frame (0-3 for walking, 0-1 for idle)
+    uint64_t last_anim_time; // last time animation frame changed
+    int base_sy; // base sprite y-coordinate for current direction
 } OBJECT;
 
 // Global game state
@@ -163,6 +172,8 @@ void teleport(void);
 void turn_screen(void);
 
 void render_frame_minimal(void);
+
+void update_character_animation(OBJECT *obj, bool is_moving);
 
 // Rock and gravity system
 int search_rock(int xr, int yr);
@@ -294,10 +305,44 @@ float interpolate_movement(uint64_t start_time, uint64_t current_time) {
     return t;
 }
 
+// Enhanced character animation system
+void update_character_animation(OBJECT *obj, bool is_moving) {
+    uint64_t current_time = get_time_us();
+    uint64_t elapsed_since_last_anim = current_time - obj->last_anim_time;
+
+    // Convert animation speed from milliseconds to microseconds
+    uint64_t animation_interval = ANIMATION_SPEED_MS * 1000;
+
+    // Check if it's time to advance the animation frame
+    if (elapsed_since_last_anim >= animation_interval) {
+        if (is_moving) {
+            // Walking animation - cycle through 4 frames
+            obj->current_frame = (obj->current_frame + 1) % ANIMATION_FRAMES;
+        } else {
+            // Idle animation - gentle breathing/standing animation with 2 frames
+            obj->current_frame = (obj->current_frame + 1) % IDLE_ANIMATION_FRAMES;
+        }
+        obj->last_anim_time = current_time;
+    }
+
+    // Calculate sprite coordinates based on direction and animation frame
+    if (is_moving) {
+        // Walking animation: each direction has 4 frames horizontally
+        obj->sx = obj->current_frame * 16;
+        obj->sy = obj->base_sy; // Use the base y-coordinate for current direction
+    } else {
+        // Idle animation: alternate between frame 0 and 1 for subtle breathing
+        obj->sx = obj->current_frame * 16;
+        obj->sy = obj->base_sy; // Keep same direction when idle
+    }
+}
+
 // Update player position with continuous smooth movement
 void update_player_position() {
     if (!objects[0].is_moving) {
-        return; // Not moving, nothing to update
+        // Not moving, but still update idle animation
+        update_character_animation(&objects[0], false); // Moving = false
+        return;
     }
 
     uint64_t current_time = get_time_us();
@@ -361,9 +406,8 @@ void update_player_position() {
         objects[0].x = objects[0].start_x + (int) ((objects[0].target_x - objects[0].start_x) * progress);
         objects[0].y = objects[0].start_y + (int) ((objects[0].target_y - objects[0].start_y) * progress);
 
-        // Animate sprite frame for smooth walking motion
-        int frame_cycle = (int) (progress * 4) % 2; // Cycle through 2 frames during movement
-        objects[0].sx = frame_cycle * 16;
+        // Enhanced smooth walking animation
+        update_character_animation(&objects[0], true); // Moving = true
     }
 }
 
@@ -880,26 +924,52 @@ int load_assets() {
     fread(levels, 1, 4736, levdat);
     fclose(levdat);
 
-    // Load intro bitmap
+    // Load intro bitmap (convert to RGB565 for faster blit on embedded)
     SDL_Surface *intro_surface = SDL_LoadBMP("/assets/intro.bmp");
     if (!intro_surface) {
         printf("Failed to load /assets/intro.bmp: %s\n", SDL_GetError());
         return 0;
     }
-    intro_texture = SDL_CreateTextureFromSurface(renderer, intro_surface);
+    SDL_Surface *intro565 = SDL_ConvertSurface(intro_surface, SDL_PIXELFORMAT_RGB565);
     SDL_DestroySurface(intro_surface);
+    if (!intro565) {
+        printf("Failed to convert intro to RGB565: %s\n", SDL_GetError());
+        return 0;
+    }
+    intro_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB565, SDL_TEXTUREACCESS_STATIC,
+                                      intro565->w, intro565->h);
+    if (!intro_texture) {
+        printf("Failed to create intro texture: %s\n", SDL_GetError());
+        SDL_DestroySurface(intro565);
+        return 0;
+    }
+    SDL_UpdateTexture(intro_texture, NULL, intro565->pixels, intro565->pitch);
+    SDL_DestroySurface(intro565);
 
-    // Load patterns bitmap
+    // Load patterns bitmap and convert to RGB565
     SDL_Surface *patterns_surface = SDL_LoadBMP("/assets/patterns.bmp");
     if (!patterns_surface) {
         printf("Failed to load /assets/patterns.bmp: %s\n", SDL_GetError());
         return 0;
     }
-    patterns_texture = SDL_CreateTextureFromSurface(renderer, patterns_surface);
+    SDL_Surface *patterns565 = SDL_ConvertSurface(patterns_surface, SDL_PIXELFORMAT_RGB565);
     SDL_DestroySurface(patterns_surface);
+    if (!patterns565) {
+        printf("Failed to convert patterns to RGB565: %s\n", SDL_GetError());
+        return 0;
+    }
+    patterns_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB565, SDL_TEXTUREACCESS_STATIC,
+                                         patterns565->w, patterns565->h);
+    if (!patterns_texture) {
+        printf("Failed to create patterns texture: %s\n", SDL_GetError());
+        SDL_DestroySurface(patterns565);
+        return 0;
+    }
+    SDL_UpdateTexture(patterns_texture, NULL, patterns565->pixels, patterns565->pitch);
+    SDL_DestroySurface(patterns565);
 
-    // Create game surface texture for off-screen rendering
-    game_surface = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+    // Create game surface texture for off-screen rendering in RGB565
+    game_surface = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB565,
                                      SDL_TEXTUREACCESS_TARGET, GAME_WIDTH, GAME_HEIGHT);
     if (!game_surface) {
         printf("Failed to create game surface: %s\n", SDL_GetError());
@@ -993,8 +1063,8 @@ void draw_level() {
             int tile = level_data[y * LEVEL_WIDTH + x];
             int xx = tile % 16;
             int yy = tile / 16;
-            SDL_FRect src_rect = {xx * 16, yy * 16 + 16, 16, 16};
-            SDL_FRect dst_rect = {x * 16 + 8, y * 16 + 8, 16, 16};
+            SDL_FRect src_rect = {(float) (xx * 16), (float) (yy * 16 + 16), 16.0f, 16.0f};
+            SDL_FRect dst_rect = {(float) (x * 16 + 8), (float) (y * 16 + 8), 16.0f, 16.0f};
             SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
         }
     }
@@ -1133,6 +1203,10 @@ void init_objects() {
     objects[0].target_y = objects[0].y;
     objects[0].movement_start_time = 0;
     objects[0].is_moving = false;
+    // Initialize enhanced animation fields
+    objects[0].current_frame = 0;
+    objects[0].last_anim_time = get_time_us();
+    objects[0].base_sy = 48; // Default facing down
     level_data[c] = 0;
 
     // Initialize rocks and enemies
@@ -1429,32 +1503,32 @@ void print_objects() {
     // Only render player object (index 0) for now to improve performance
     // Full game would require more complex dirty rectangle tracking
     if (objects[0].l) {
-        SDL_FRect src_rect = {objects[0].sx, objects[0].sy, 16, 16};
-        SDL_FRect dst_rect = {objects[0].x, objects[0].y, 16, 16};
+        SDL_FRect src_rect = {(float) objects[0].sx, (float) objects[0].sy, 16.0f, 16.0f};
+        SDL_FRect dst_rect = {(float) objects[0].x, (float) objects[0].y, 16.0f, 16.0f};
         SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
     }
 
     // Render rocks (objects 5-14) with their current positions
     for (int nc = 5; nc < 15; nc++) {
         if (objects[nc].l) {
-            SDL_FRect src_rect = {48, 16, 16, 16}; // Rock sprite
-            SDL_FRect dst_rect = {objects[nc].x, objects[nc].y, 16, 16};
+            SDL_FRect src_rect = {48.0f, 16.0f, 16.0f, 16.0f}; // Rock sprite
+            SDL_FRect dst_rect = {(float) objects[nc].x, (float) objects[nc].y, 16.0f, 16.0f};
             SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
         }
     }
 
     // Render pushable block (object 15)
     if (objects[15].l) {
-        SDL_FRect src_rect = {11 * 16, 16, 16, 16}; // Block sprite
-        SDL_FRect dst_rect = {objects[15].x, objects[15].y, 16, 16};
+        SDL_FRect src_rect = {(float) (11 * 16), 16.0f, 16.0f, 16.0f}; // Block sprite
+        SDL_FRect dst_rect = {(float) objects[15].x, (float) objects[15].y, 16.0f, 16.0f};
         SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
     }
 
     // Render enemies (objects 1-4) - simplified for now
     for (int nc = 1; nc < 5; nc++) {
         if (objects[nc].l) {
-            SDL_FRect src_rect = {objects[nc].sx, objects[nc].sy, 16, 16};
-            SDL_FRect dst_rect = {objects[nc].x, objects[nc].y, 16, 16};
+            SDL_FRect src_rect = {(float) objects[nc].sx, (float) objects[nc].sy, 16.0f, 16.0f};
+            SDL_FRect dst_rect = {(float) objects[nc].x, (float) objects[nc].y, 16.0f, 16.0f};
             SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
         }
     }
@@ -1583,8 +1657,13 @@ void move_player() {
     objects[0].movement_start_time = get_time_us();
     objects[0].is_moving = true;
     objects[0].dir = direction;
-    objects[0].sx = 0; // Start with first animation frame
-    objects[0].sy = sprite_sy;
+
+    // Initialize enhanced animation state
+    objects[0].base_sy = sprite_sy; // Store base y-coordinate for this direction
+    objects[0].current_frame = 0; // Start with first animation frame
+    objects[0].last_anim_time = get_time_us(); // Reset animation timer
+    objects[0].sx = 0; // Will be updated by animation system
+    objects[0].sy = sprite_sy; // Will be updated by animation system
 
     ESP_LOGI("movement", "Starting movement from (%d, %d) to (%d, %d)",
              objects[0].dx, objects[0].dy, target_dx, target_dy);
