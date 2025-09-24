@@ -1,0 +1,34 @@
+esp_toml_version = 1.0
+
+# Base URL where ESP32-Fruitland firmware binaries are hosted
+firmware_images_url = "https://georgik.github.io/esp32-fruitland/firmware/"
+
+# ESP32-Fruitland applications available
+supported_apps = ["ESP32-Fruitland"]
+
+# Configuration documentation
+config_readme_url = "https://raw.githubusercontent.com/georgik/esp32-fruitland/main/docs/FLASH_INSTRUCTIONS.md"
+
+[ESP32-Fruitland]
+# Supported ESP32 chipsets
+chipsets = ["ESP32-S3", "ESP32-P4"]
+
+# Development kits
+developKits.esp32-s3 = ["esp32-s3-box-3", "m5stack-core-s3", "esp32-s3-lcd-ev-board"]
+developKits.esp32-p4 = ["esp32-p4-function-ev-board", "m5stack-tab5"]
+
+# Firmware images for each board (using merged binaries)
+image.esp32-s3-box-3 = "esp32-fruitland-latest-esp-box-3.bin"
+image.m5stack-core-s3 = "esp32-fruitland-latest-m5stack_core_s3.bin"
+image.esp32-s3-lcd-ev-board = "esp32-fruitland-latest-esp32_s3_lcd_ev_board.bin"
+image.esp32-p4-function-ev-board = "esp32-fruitland-latest-esp32_p4_function_ev_board.bin"
+image.m5stack-tab5 = "esp32-fruitland-latest-m5stack_tab5.bin"
+
+# Description
+description = "ESP32-Fruitland - Classic arcade-style fruit collection game ported to ESP32 with SDL3. Experience nostalgic arcade gaming with modern ESP32 hardware acceleration. Features touch screen support, multiple display resolutions, and PSRAM optimization for smooth gameplay."
+
+# Additional information
+readme.text = "https://raw.githubusercontent.com/georgik/esp32-fruitland/main/README.md"
+
+# Console settings
+console_baudrate = 115200
