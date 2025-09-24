@@ -10,6 +10,8 @@
 #include <string.h>
 #include <pthread.h>
 #include "SDL3/SDL.h"
+#include "SDL3/SDL_hints.h"
+#include "SDL_hints.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "filesystem.h"
@@ -526,44 +528,67 @@ int game() {
             }
 #endif
 
-            // Process accelerometer input events
+            // Process accelerometer input events (less frequently to save CPU)
 #ifdef CONFIG_FRUITLAND_ACCELEROMETER_INPUT
-            if (is_accelerometer_available()) {
+            static int accel_counter = 0;
+            if (is_accelerometer_available() && (++accel_counter >= 3)) {
                 process_accelerometer();
+                accel_counter = 0;
             }
 #endif
 
             keyboard_state = SDL_GetKeyboardState(NULL);
 
-            // Only clear player's old position (more efficient)
-            SDL_SetRenderTarget(renderer, game_surface);
-            SDL_FRect clear_rect = {objects[0].x, objects[0].y, 16, 16};
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-            SDL_RenderFillRect(renderer, &clear_rect);
+            // Store previous stats for change detection
+            static int prev_score = -1, prev_time = -1, prev_level = -1, prev_lives = -1;
+            static int prev_player_x = -1, prev_player_y = -1;
 
             move_player();
-            print_objects();
             av_time--;
 
-            // Update statistics less frequently to improve performance
-            static int stats_counter = 0;
-            if (++stats_counter >= 10) {
-                // Update stats every 10 frames
-                print_stats();
-                stats_counter = 0;
+            // Check if anything changed that requires rendering
+            bool player_moved = (objects[0].x != prev_player_x || objects[0].y != prev_player_y);
+            bool stats_changed = (score != prev_score || av_time != prev_time ||
+                                  level != prev_level || lives != prev_lives);
+
+            if (player_moved || stats_changed) {
+                SDL_SetRenderTarget(renderer, game_surface);
+
+                if (player_moved && prev_player_x >= 0) {
+                    // Clear player's old position only if they moved
+                    SDL_FRect clear_rect = {prev_player_x, prev_player_y, 16, 16};
+                    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                    SDL_RenderFillRect(renderer, &clear_rect);
+                }
+
+                print_objects();
+
+                if (stats_changed) {
+                    print_stats();
+                    prev_score = score;
+                    prev_time = av_time;
+                    prev_level = level;
+                    prev_lives = lives;
+                }
+
+                prev_player_x = objects[0].x;
+                prev_player_y = objects[0].y;
             }
 
-            // Render game surface to screen with cached scaling
-            SDL_SetRenderTarget(renderer, NULL);
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-            SDL_RenderClear(renderer);
+            // Only update screen if something actually changed
+            if (player_moved || stats_changed) {
+                // Render game surface to screen with cached scaling
+                SDL_SetRenderTarget(renderer, NULL);
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                SDL_RenderClear(renderer);
 
-            SDL_FRect dst_rect = {cached_offset_x, cached_offset_y, cached_scaled_w, cached_scaled_h};
-            SDL_RenderTexture(renderer, game_surface, NULL, &dst_rect);
-            SDL_RenderPresent(renderer);
+                SDL_FRect dst_rect = {cached_offset_x, cached_offset_y, cached_scaled_w, cached_scaled_h};
+                SDL_RenderTexture(renderer, game_surface, NULL, &dst_rect);
+                SDL_RenderPresent(renderer);
+            }
 
-            // Improved frame rate: ~60 FPS instead of 30 FPS
-            vTaskDelay(pdMS_TO_TICKS(16)); // ~60 FPS
+            // Optimized frame rate for embedded: ~30 FPS for smooth gameplay with good performance
+            vTaskDelay(pdMS_TO_TICKS(10)); // ~100 FPS target, but will be limited by actual rendering speed
         }
 
         if (av_time == 0 || dead) {
@@ -588,6 +613,10 @@ void *sdl_thread(void *args) {
         return NULL;
     }
     printf("SDL initialized successfully\n");
+
+    // Set SDL3 performance hints for embedded devices
+    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0"); // Disable VSync for better performance
+    SDL_SetHint("SDL_RENDER_SCALE_QUALITY", "0"); // Use nearest-neighbor scaling (fastest)
 
 #ifdef CONFIG_IDF_TARGET_ESP32P4
     // Initialize USB HID keyboard on ESP32-P4
