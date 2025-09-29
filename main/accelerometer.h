@@ -53,11 +53,24 @@ bool is_accelerometer_available(void);
 void cleanup_accelerometer(void);
 
 /**
- * @brief Set accelerometer sensitivity threshold
+ * @brief Set accelerometer sensitivity threshold (backward compatibility)
  * 
  * @param threshold Tilt threshold in g-force (0.1 to 1.0, default 0.3)
+ *                  This automatically sets small and large thresholds based on this value
  */
 void set_accelerometer_threshold(float threshold);
+
+/**
+ * @brief Set separate thresholds for improved tilt detection
+ * 
+ * This allows fine-tuning of the dual-threshold tilt detection system:
+ * - Small tilts generate single keystrokes (good for precise navigation through gaps)
+ * - Large tilts enable continuous movement mode (good for fast traversal)
+ * 
+ * @param small_threshold Small tilt threshold for single keystrokes (0.1 to 0.8g, default 0.2g)
+ * @param large_threshold Large tilt threshold for continuous movement (0.2 to 1.0g, default 0.45g)
+ */
+void set_accelerometer_thresholds(float small_threshold, float large_threshold);
 
 /**
  * @brief Set accelerometer deadzone
@@ -65,6 +78,24 @@ void set_accelerometer_threshold(float threshold);
  * @param deadzone Deadzone in g-force to prevent jitter (0.05 to 0.5, default 0.1)
  */
 void set_accelerometer_deadzone(float deadzone);
+
+/**
+ * @brief Check if there's a pending single move from accelerometer
+ * 
+ * This function allows the game to check for precise single-tile movements
+ * triggered by small accelerometer tilts, bypassing SDL keyboard events.
+ * 
+ * @return Movement direction: 0=none, 1=UP, 2=DOWN, 3=LEFT, 4=RIGHT
+ */
+int accelerometer_get_pending_move(void);
+
+/**
+ * @brief Consume the pending single move (call after processing it)
+ * 
+ * This function should be called after the game has processed the pending move
+ * to clear it and allow new moves to be queued.
+ */
+void accelerometer_consume_pending_move(void);
 
 #endif // CONFIG_FRUITLAND_ACCELEROMETER_INPUT
 

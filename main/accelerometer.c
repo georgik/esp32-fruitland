@@ -15,6 +15,7 @@
 #include "freertos/task.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "accelerometer";
 
@@ -31,17 +32,35 @@ static bool accelerometer_initialized = false;
 static icm42670_handle_t icm42670_handle = NULL;
 static i2c_master_bus_handle_t i2c_handle = NULL;
 
-// Configuration parameters
-static float tilt_threshold = 0.3f; // G-force threshold to trigger movement
-static float deadzone = 0.1f; // Deadzone to prevent jitter
+// Configuration parameters for intuitive tilt detection - tuned for ESP32-S3-BOX-3
+static float small_tilt_threshold = 0.2f;  // Light tilt threshold for single move (reduced for easier use)
+static float large_tilt_threshold = 0.45f; // Stronger tilt threshold for continuous movement (reduced)
+static float deadzone = 0.08f; // Deadzone to prevent jitter (reduced for more sensitivity)
 static bool invert_x = true; // Invert X-axis - ESP32-S3-BOX-3 needs this for correct tilt direction
 static bool invert_y = false; // Invert Y-axis if needed
 
-// Previous key states to avoid duplicate events
+// Enhanced state tracking for improved tilt detection
 static bool prev_left = false;
 static bool prev_right = false;
 static bool prev_up = false;
 static bool prev_down = false;
+
+// Direct movement triggering system - bypasses SDL keyboard events for single moves
+static uint64_t last_move_time[4] = {0}; // LEFT, RIGHT, UP, DOWN
+static bool tilt_gesture_active[4] = {false}; // Track if we're in the middle of a tilt gesture
+static uint64_t deadzone_enter_time = 0; // When we entered deadzone
+static bool in_deadzone = false; // Are we currently in deadzone
+static const uint64_t move_cooldown_us = 200000; // 200ms cooldown between single moves
+static const uint64_t gesture_reset_time_us = 100000;  // 100ms in deadzone before allowing new gesture
+
+// Direct movement interface - will be called by main game
+static int pending_single_move = 0; // 0=none, 1=UP, 2=DOWN, 3=LEFT, 4=RIGHT
+
+// Direction indices for arrays
+#define DIR_LEFT  0
+#define DIR_RIGHT 1
+#define DIR_UP    2
+#define DIR_DOWN  3
 
 /**
  * @brief Send SDL keyboard event for accelerometer input
@@ -71,55 +90,204 @@ static void send_accel_key_event(SDL_Scancode scancode, bool pressed) {
 }
 
 /**
- * @brief Process accelerometer readings and generate key events
+ * @brief Get current time in microseconds for timing calculations
+ */
+static uint64_t get_time_us() {
+    return esp_timer_get_time();
+}
+
+/**
+ * @brief Handle single move with direct triggering - bypasses SDL for precision
+ */
+static void handle_single_move(int dir_index, uint64_t current_time) {
+    // ONE-SHOT LOGIC: Only trigger if this is a new gesture and no pending move
+    if (!tilt_gesture_active[dir_index] && pending_single_move == 0 &&
+        (current_time - last_move_time[dir_index]) >= move_cooldown_us) {
+        
+        // Mark this gesture as active to prevent repeat
+        tilt_gesture_active[dir_index] = true;
+        
+        // Queue the single move (1=UP, 2=DOWN, 3=LEFT, 4=RIGHT)
+        pending_single_move = dir_index + 1;
+        last_move_time[dir_index] = current_time;
+        
+        const char* dir_names[] = {"LEFT", "RIGHT", "UP", "DOWN"};
+        ESP_LOGI(TAG, "🎮 %s single move queued - precise one tile", dir_names[dir_index]);
+    }
+}
+
+/**
+ * @brief Check if there's a pending single move from accelerometer
+ * @return Movement direction: 0=none, 1=UP, 2=DOWN, 3=LEFT, 4=RIGHT
+ */
+int accelerometer_get_pending_move(void) {
+    return pending_single_move;
+}
+
+/**
+ * @brief Consume the pending single move (call after processing it)
+ */
+void accelerometer_consume_pending_move(void) {
+    if (pending_single_move != 0) {
+        ESP_LOGI(TAG, "✅ Single move consumed");
+        pending_single_move = 0;
+    }
+}
+
+/**
+ * @brief Process accelerometer readings with improved tilt detection algorithm
+ * 
+ * This function implements a dual-threshold system:
+ * - Small tilts generate single keystrokes (good for precise navigation)
+ * - Large tilts switch to continuous movement mode (good for fast movement)
  */
 static void process_accelerometer_data(const icm42670_value_t *accel_data) {
     float x = accel_data->x;
     float y = accel_data->y;
+    uint64_t current_time = get_time_us();
 
     // Apply axis inversions if configured
     if (invert_x) x = -x;
     if (invert_y) y = -y;
 
-    // Calculate current key states based on tilt
-    bool current_left = (x < -tilt_threshold);
-    bool current_right = (x > tilt_threshold);
-    bool current_up = (y > tilt_threshold); // Assuming positive Y is up
-    bool current_down = (y < -tilt_threshold); // Assuming negative Y is down
-
-    // Apply deadzone - if we're within deadzone of center, no movement
-    if (fabs(x) < deadzone) {
-        current_left = false;
-        current_right = false;
+    // Apply deadzone first - if we're within deadzone, reset everything
+    if (fabs(x) < deadzone && fabs(y) < deadzone) {
+        // Track how long we've been in deadzone
+        if (!in_deadzone) {
+            in_deadzone = true;
+            deadzone_enter_time = current_time;
+        }
+        
+        // After being in deadzone long enough, reset gesture states
+        if (current_time - deadzone_enter_time >= gesture_reset_time_us) {
+            for (int i = 0; i < 4; i++) {
+                tilt_gesture_active[i] = false; // Reset gesture tracking
+            }
+        }
+        
+        // Release any currently pressed continuous keys
+        if (prev_left) {
+            send_accel_key_event(SDL_SCANCODE_LEFT, false);
+            prev_left = false;
+        }
+        if (prev_right) {
+            send_accel_key_event(SDL_SCANCODE_RIGHT, false);
+            prev_right = false;
+        }
+        if (prev_up) {
+            send_accel_key_event(SDL_SCANCODE_UP, false);
+            prev_up = false;
+        }
+        if (prev_down) {
+            send_accel_key_event(SDL_SCANCODE_DOWN, false);
+            prev_down = false;
+        }
+        return;
+    } else {
+        // We're no longer in deadzone
+        in_deadzone = false;
     }
-    if (fabs(y) < deadzone) {
-        current_up = false;
-        current_down = false;
+
+    // Process each direction with the improved algorithm
+    
+    // LEFT movement (negative X)
+    if (x < -deadzone) {
+        float tilt_magnitude = fabs(x);
+        
+        if (tilt_magnitude >= large_tilt_threshold) {
+            // Large tilt - continuous movement mode
+            if (!prev_left) {
+                send_accel_key_event(SDL_SCANCODE_LEFT, true);
+                prev_left = true;
+                ESP_LOGI(TAG, "⬅️ LEFT continuous mode (tilt=%.2f) - held key", tilt_magnitude);
+            }
+        } else if (tilt_magnitude >= small_tilt_threshold) {
+            // Small tilt - single move mode
+            handle_single_move(DIR_LEFT, current_time);
+        }
+    } else {
+        // Not tilting left - release if was pressed
+        if (prev_left) {
+            send_accel_key_event(SDL_SCANCODE_LEFT, false);
+            prev_left = false;
+        }
+        // Don't immediately reset keystroke_sent - let deadzone timeout handle it
     }
 
-    // Send key press/release events only when state changes
-    if (current_left != prev_left) {
-        send_accel_key_event(SDL_SCANCODE_LEFT, current_left);
-        prev_left = current_left;
+    // RIGHT movement (positive X)
+    if (x > deadzone) {
+        float tilt_magnitude = fabs(x);
+        
+        if (tilt_magnitude >= large_tilt_threshold) {
+            // Large tilt - continuous movement mode
+            if (!prev_right) {
+                send_accel_key_event(SDL_SCANCODE_RIGHT, true);
+                prev_right = true;
+                ESP_LOGI(TAG, "➡️ RIGHT continuous mode (tilt=%.2f) - held key", tilt_magnitude);
+            }
+        } else if (tilt_magnitude >= small_tilt_threshold) {
+            // Small tilt - single move mode
+            handle_single_move(DIR_RIGHT, current_time);
+        }
+    } else {
+        // Not tilting right - release if was pressed
+        if (prev_right) {
+            send_accel_key_event(SDL_SCANCODE_RIGHT, false);
+            prev_right = false;
+        }
+        // Don't immediately reset keystroke_sent - let deadzone timeout handle it
     }
 
-    if (current_right != prev_right) {
-        send_accel_key_event(SDL_SCANCODE_RIGHT, current_right);
-        prev_right = current_right;
+    // UP movement (positive Y)
+    if (y > deadzone) {
+        float tilt_magnitude = fabs(y);
+        
+        if (tilt_magnitude >= large_tilt_threshold) {
+            // Large tilt - continuous movement mode
+            if (!prev_up) {
+                send_accel_key_event(SDL_SCANCODE_UP, true);
+                prev_up = true;
+                ESP_LOGI(TAG, "⬆️ UP continuous mode (tilt=%.2f) - held key", tilt_magnitude);
+            }
+        } else if (tilt_magnitude >= small_tilt_threshold) {
+            // Small tilt - single move mode
+            handle_single_move(DIR_UP, current_time);
+        }
+    } else {
+        // Not tilting up - release if was pressed
+        if (prev_up) {
+            send_accel_key_event(SDL_SCANCODE_UP, false);
+            prev_up = false;
+        }
+        // Don't immediately reset keystroke_sent - let deadzone timeout handle it
     }
 
-    if (current_up != prev_up) {
-        send_accel_key_event(SDL_SCANCODE_UP, current_up);
-        prev_up = current_up;
+    // DOWN movement (negative Y)
+    if (y < -deadzone) {
+        float tilt_magnitude = fabs(y);
+        
+        if (tilt_magnitude >= large_tilt_threshold) {
+            // Large tilt - continuous movement mode
+            if (!prev_down) {
+                send_accel_key_event(SDL_SCANCODE_DOWN, true);
+                prev_down = true;
+                ESP_LOGI(TAG, "⬇️ DOWN continuous mode (tilt=%.2f) - held key", tilt_magnitude);
+            }
+        } else if (tilt_magnitude >= small_tilt_threshold) {
+            // Small tilt - single move mode
+            handle_single_move(DIR_DOWN, current_time);
+        }
+    } else {
+        // Not tilting down - release if was pressed
+        if (prev_down) {
+            send_accel_key_event(SDL_SCANCODE_DOWN, false);
+            prev_down = false;
+        }
+        // Don't immediately reset keystroke_sent - let deadzone timeout handle it
     }
 
-    if (current_down != prev_down) {
-        send_accel_key_event(SDL_SCANCODE_DOWN, current_down);
-        prev_down = current_down;
-    }
-
-    ESP_LOGV(TAG, "Accel: x=%.2f, y=%.2f -> L:%d R:%d U:%d D:%d",
-             x, y, current_left, current_right, current_up, current_down);
+    ESP_LOGV(TAG, "Accel: x=%.2f, y=%.2f -> L:%d R:%d U:%d D:%d (continuous mode)",
+             x, y, prev_left, prev_right, prev_up, prev_down);
 }
 
 // Public API implementation
@@ -248,11 +416,30 @@ void cleanup_accelerometer(void) {
 }
 
 void set_accelerometer_threshold(float threshold) {
+    // For backward compatibility, set both thresholds based on single value
     if (threshold >= 0.1f && threshold <= 1.0f) {
-        tilt_threshold = threshold;
-        ESP_LOGI(TAG, "Accelerometer threshold set to %.2f g", threshold);
+        small_tilt_threshold = threshold;
+        large_tilt_threshold = threshold * 1.8f;  // 180% of threshold for large tilt
+        if (large_tilt_threshold > 1.0f) large_tilt_threshold = 1.0f; // Cap at 1g
+        ESP_LOGI(TAG, "Accelerometer thresholds set: small=%.2f g, large=%.2f g", 
+                 small_tilt_threshold, large_tilt_threshold);
     } else {
         ESP_LOGW(TAG, "Invalid threshold %.2f, must be between 0.1 and 1.0", threshold);
+    }
+}
+
+void set_accelerometer_thresholds(float small_threshold, float large_threshold) {
+    if (small_threshold >= 0.1f && small_threshold <= 0.8f && 
+        large_threshold >= 0.2f && large_threshold <= 1.0f &&
+        large_threshold > small_threshold) {
+        
+        small_tilt_threshold = small_threshold;
+        large_tilt_threshold = large_threshold;
+        ESP_LOGI(TAG, "Accelerometer thresholds set: small=%.2f g, large=%.2f g", 
+                 small_tilt_threshold, large_tilt_threshold);
+    } else {
+        ESP_LOGW(TAG, "Invalid thresholds small=%.2f, large=%.2f. Requirements: 0.1 <= small <= 0.8, 0.2 <= large <= 1.0, large > small", 
+                 small_threshold, large_threshold);
     }
 }
 
@@ -286,6 +473,10 @@ void cleanup_accelerometer(void) {
 }
 
 void set_accelerometer_threshold(float threshold) {
+    ESP_LOGW(TAG, "Accelerometer input is disabled in configuration");
+}
+
+void set_accelerometer_thresholds(float small_threshold, float large_threshold) {
     ESP_LOGW(TAG, "Accelerometer input is disabled in configuration");
 }
 

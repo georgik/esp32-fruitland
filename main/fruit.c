@@ -1400,7 +1400,7 @@ void get_item() {
     }
 }
 
-// Move rocks with gravity (from original game)
+// Move rocks with gravity (from original game) - Fixed collision detection
 void move_rocks() {
     for (int r = 5; r < 15; r++) {
         if (objects[r].l) {
@@ -1437,7 +1437,7 @@ void move_rocks() {
                 uint64_t elapsed = current_time - objects[r].movement_start_time;
 
                 if (elapsed >= TILE_MOVEMENT_DURATION_US) {
-                    // Movement complete
+                    // Movement complete - check if we can continue falling or must stop
                     objects[r].is_moving = false;
                     objects[r].dir = 0;
 
@@ -1457,17 +1457,45 @@ void move_rocks() {
                     level_data[objects[r].dx + objects[r].dy * LEVEL_WIDTH] = 3;
                     objects[r].l = 1; // Rock is stationary again
                     ESP_LOGI("gravity", "Rock moved to (%d,%d)", objects[r].dx, objects[r].dy);
+
+                    // Check if rock can continue falling (based on original logic)
+                    if (objects[r].dy < LEVEL_HEIGHT - 1) {
+                        int below_pos = objects[r].dx + (objects[r].dy + 1) * LEVEL_WIDTH;
+                        int d = level_data[below_pos];
+                        
+                        // Only continue falling if destination is clear
+                        if (d == 0 || d == 81) {
+                            // Check if player is directly below (don't crush player immediately)
+                            bool player_below = (objects[r].dx == objects[0].dx && objects[r].dy == objects[0].dy - 1);
+                            if (!player_below) {
+                                // Continue falling immediately - set up next fall
+                                objects[r].movement_start_time = current_time; // Start next fall immediately
+                                objects[r].is_moving = true;
+                                objects[r].dir = DOWN;
+                                objects[r].l = 2; // Mark as falling
+                                objects[r].start_x = objects[r].x;
+                                objects[r].start_y = objects[r].y;
+                                objects[r].target_dx = objects[r].dx;
+                                objects[r].target_dy = objects[r].dy + 1;
+                                objects[r].target_x = objects[r].dx * 16 + 8;
+                                objects[r].target_y = (objects[r].dy + 1) * 16 + 8;
+                                level_data[objects[r].dx + objects[r].dy * LEVEL_WIDTH] = 80; // Mark old pos as moving
+                                ESP_LOGI("gravity", "Rock continues falling from (%d,%d)", objects[r].dx, objects[r].dy);
+                            }
+                        } else {
+                            ESP_LOGI("gravity", "Rock stopped at (%d,%d) - blocked by tile %d", objects[r].dx, objects[r].dy, d);
+                        }
+                    }
                 } else {
-                    // Interpolate position
+                    // Interpolate position - DO NOT update target during movement!
                     float progress = (float) elapsed / TILE_MOVEMENT_DURATION_US;
                     if (progress > 1.0f) progress = 1.0f;
 
                     objects[r].x = objects[r].start_x + (objects[r].target_x - objects[r].start_x) * progress;
                     objects[r].y = objects[r].start_y + (objects[r].target_y - objects[r].start_y) * progress;
-
-                    // Update target position for falling
-                    objects[r].target_dx = objects[r].dx;
-                    objects[r].target_dy = objects[r].dy + 1;
+                    
+                    // FIXED: Don't update target during interpolation - this was causing rocks to fall through blocks!
+                    // The target should remain fixed during a single movement step
                 }
             } else {
                 objects[r].l = 1; // Ensure rock is marked as stationary
@@ -1556,8 +1584,36 @@ void move_player() {
     int direction = 0;
     int sprite_sy = objects[0].sy; // Keep current sprite direction
 
-    // Determine target tile based on input
-    if (keyboard_state[SDL_SCANCODE_UP] && objects[0].dy > 0) {
+    // First check for accelerometer single moves (higher precision)
+#ifdef CONFIG_FRUITLAND_ACCELEROMETER_INPUT
+    int accel_move = accelerometer_get_pending_move();
+    if (accel_move != 0) {
+        // Process accelerometer move (dir_index + 1: LEFT=1, RIGHT=2, UP=3, DOWN=4)
+        if (accel_move == 3 && objects[0].dy > 0) { // UP
+            target_dy = objects[0].dy - 1;
+            direction = UP;
+            sprite_sy = 64;
+        } else if (accel_move == 4 && objects[0].dy < LEVEL_HEIGHT - 1) { // DOWN
+            target_dy = objects[0].dy + 1;
+            direction = DOWN;
+            sprite_sy = 80;
+        } else if (accel_move == 1 && objects[0].dx > 0) { // LEFT
+            target_dx = objects[0].dx - 1;
+            direction = LEFT;
+            sprite_sy = 32;
+        } else if (accel_move == 2 && objects[0].dx < LEVEL_WIDTH - 1) { // RIGHT
+            target_dx = objects[0].dx + 1;
+            direction = RIGHT;
+            sprite_sy = 48;
+        }
+        
+        // Consume the move regardless of whether it was valid
+        accelerometer_consume_pending_move();
+    }
+#endif
+
+    // If no accelerometer move, check keyboard input
+    if (direction == 0 && keyboard_state[SDL_SCANCODE_UP] && objects[0].dy > 0) {
         target_dy = objects[0].dy - 1;
         direction = UP;
         sprite_sy = 64; // Up-facing sprite
@@ -1583,63 +1639,85 @@ void move_player() {
     // Check if target tile is passable or pushable
     int target_tile = level_data[target_dx + target_dy * LEVEL_WIDTH];
 
-    // Handle rock pushing (type 3 = rock)
+    // Handle rock pushing (type 3 = rock) - now supports all directions like original
     if (target_tile == 3) {
-        // Try to push rock (only left/right pushing supported for now)
-        if (direction == LEFT && target_dx > 0) {
-            int beyond_rock_tile = level_data[(target_dx - 1) + target_dy * LEVEL_WIDTH];
-            if (beyond_rock_tile == 0) {
-                // Space beyond rock
-                int rock_idx = search_rock(target_dx, target_dy);
-                if (rock_idx >= 0) {
-                    // Push rock left
-                    objects[rock_idx].target_dx = target_dx - 1;
-                    objects[rock_idx].target_dy = target_dy;
-                    objects[rock_idx].start_x = objects[rock_idx].x;
-                    objects[rock_idx].start_y = objects[rock_idx].y;
-                    objects[rock_idx].target_x = (target_dx - 1) * 16 + 8;
-                    objects[rock_idx].target_y = target_dy * 16 + 8;
-                    objects[rock_idx].movement_start_time = get_time_us();
-                    objects[rock_idx].is_moving = true;
-                    objects[rock_idx].dir = LEFT;
+        int rock_idx = search_rock(target_dx, target_dy);
+        if (rock_idx < 0) {
+            ESP_LOGD("push", "Rock not found at (%d,%d)", target_dx, target_dy);
+            return;
+        }
 
-                    // Mark destination as reserved
-                    level_data[(target_dx - 1) + target_dy * LEVEL_WIDTH] = 255;
-                    ESP_LOGI("push", "Pushing rock left from (%d,%d) to (%d,%d)", target_dx, target_dy, target_dx-1,
-                             target_dy);
+        bool can_push = false;
+        int push_target_dx = target_dx;
+        int push_target_dy = target_dy;
+
+        if (direction == LEFT && target_dx > 0) {
+            push_target_dx = target_dx - 1;
+            int beyond_rock_tile = level_data[push_target_dx + push_target_dy * LEVEL_WIDTH];
+            if (beyond_rock_tile == 0) {
+                // Additional check from original: if rock is being pushed left,
+                // check if it would be stable (not fall immediately unless there's support)
+                if (push_target_dy < LEVEL_HEIGHT - 1) {
+                    int below_push_target = level_data[push_target_dx + (push_target_dy + 1) * LEVEL_WIDTH];
+                    if (below_push_target == 0) {
+                        ESP_LOGD("push", "Rock would fall after being pushed left - allowing push");
+                    }
                 }
-            } else {
-                ESP_LOGD("push", "Can't push rock left - blocked by tile %d", beyond_rock_tile);
-                return;
+                can_push = true;
             }
         } else if (direction == RIGHT && target_dx < LEVEL_WIDTH - 1) {
-            int beyond_rock_tile = level_data[(target_dx + 1) + target_dy * LEVEL_WIDTH];
+            push_target_dx = target_dx + 1;
+            int beyond_rock_tile = level_data[push_target_dx + push_target_dy * LEVEL_WIDTH];
             if (beyond_rock_tile == 0) {
-                // Space beyond rock
-                int rock_idx = search_rock(target_dx, target_dy);
-                if (rock_idx >= 0) {
-                    // Push rock right
-                    objects[rock_idx].target_dx = target_dx + 1;
-                    objects[rock_idx].target_dy = target_dy;
-                    objects[rock_idx].start_x = objects[rock_idx].x;
-                    objects[rock_idx].start_y = objects[rock_idx].y;
-                    objects[rock_idx].target_x = (target_dx + 1) * 16 + 8;
-                    objects[rock_idx].target_y = target_dy * 16 + 8;
-                    objects[rock_idx].movement_start_time = get_time_us();
-                    objects[rock_idx].is_moving = true;
-                    objects[rock_idx].dir = RIGHT;
-
-                    // Mark destination as reserved
-                    level_data[(target_dx + 1) + target_dy * LEVEL_WIDTH] = 255;
-                    ESP_LOGI("push", "Pushing rock right from (%d,%d) to (%d,%d)", target_dx, target_dy, target_dx+1,
-                             target_dy);
+                // Additional check from original: if rock is being pushed right,
+                // check if it would be stable (not fall immediately unless there's support)
+                if (push_target_dy < LEVEL_HEIGHT - 1) {
+                    int below_push_target = level_data[push_target_dx + (push_target_dy + 1) * LEVEL_WIDTH];
+                    if (below_push_target == 0) {
+                        ESP_LOGD("push", "Rock would fall after being pushed right - allowing push");
+                    }
                 }
-            } else {
-                ESP_LOGD("push", "Can't push rock right - blocked by tile %d", beyond_rock_tile);
-                return;
+                can_push = true;
             }
+        } else if (direction == UP && target_dy > 0) {
+            // Pushing rocks up is allowed in original game
+            push_target_dy = target_dy - 1;
+            int beyond_rock_tile = level_data[push_target_dx + push_target_dy * LEVEL_WIDTH];
+            if (beyond_rock_tile == 0) {
+                can_push = true;
+                ESP_LOGI("push", "Pushing rock up from (%d,%d) to (%d,%d)", target_dx, target_dy, push_target_dx, push_target_dy);
+            }
+        } else if (direction == DOWN && target_dy < LEVEL_HEIGHT - 1) {
+            // In original game, pushing rocks down was not allowed (see line 1004-1005 in original)
+            // "bij omlaag gaan kan rots verschuiven niet" = "when going down rocks cannot be moved"
+            ESP_LOGD("push", "Can't push rock down - not allowed in original game");
+            return;
+        }
+
+        if (can_push) {
+            // Clear old rock position
+            level_data[target_dx + target_dy * LEVEL_WIDTH] = 0;
+            
+            // Set up rock movement
+            objects[rock_idx].target_dx = push_target_dx;
+            objects[rock_idx].target_dy = push_target_dy;
+            objects[rock_idx].start_x = objects[rock_idx].x;
+            objects[rock_idx].start_y = objects[rock_idx].y;
+            objects[rock_idx].target_x = push_target_dx * 16 + 8;
+            objects[rock_idx].target_y = push_target_dy * 16 + 8;
+            objects[rock_idx].movement_start_time = get_time_us();
+            objects[rock_idx].is_moving = true;
+            objects[rock_idx].dir = direction;
+
+            // Mark destination as reserved
+            level_data[push_target_dx + push_target_dy * LEVEL_WIDTH] = 255;
+            
+            ESP_LOGI("push", "Pushing rock %s from (%d,%d) to (%d,%d)", 
+                     (direction == LEFT) ? "left" : (direction == RIGHT) ? "right" : 
+                     (direction == UP) ? "up" : "down",
+                     target_dx, target_dy, push_target_dx, push_target_dy);
         } else {
-            ESP_LOGD("push", "Can't push rock - direction not supported or at edge");
+            ESP_LOGD("push", "Can't push rock - blocked or at edge");
             return;
         }
     } else if (!is_passable(target_tile)) {
