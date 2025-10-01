@@ -185,6 +185,14 @@ void move_block(void);
 
 void init_block_sprite(void);
 
+// Enemy movement system
+void move_enemy(void);
+void move_type_hor(int e);
+void move_type_ver(int e);
+void move_type_ghost(int e);
+void check_collision(void);
+void check_overlap(int i);
+
 // Optimized area updates for minimal rendering
 typedef struct {
     int start_line; // Starting line for update
@@ -1087,7 +1095,8 @@ void init_level_data() {
     a = a + 4;
     for (int c = 0; c < LEVEL_WIDTH * LEVEL_HEIGHT; c++) {
         int d = levels[a + c];
-        if (d == 15) d--; // Remove old enemy type
+        // Note: Re-enabled type 15 enemies (ghosts) - they were disabled in original
+        // if (d == 15) d--; // Remove old enemy type - DISABLED to allow ghosts
         level_data[c] = d;
     }
     a = a - 2;
@@ -1240,15 +1249,49 @@ void init_objects() {
             ESP_LOGI("init", "Initialized rock %d at (%d,%d)", cur_rock, objects[cur_rock].dx, objects[cur_rock].dy);
             cur_rock++;
         }
-        if ((level_data[c] == 14 || level_data[c] == 13) && cur_enemy < 5) {
+        if ((level_data[c] == 14 || level_data[c] == 13 || level_data[c] == 15) && cur_enemy < 5) {
             // Enemy
             objects[cur_enemy].dx = c % LEVEL_WIDTH;
             objects[cur_enemy].dy = c / LEVEL_WIDTH;
             objects[cur_enemy].x = (c % LEVEL_WIDTH) * 16 + 8;
             objects[cur_enemy].y = (c / LEVEL_WIDTH) * 16 + 8;
-            objects[cur_enemy].l = (level_data[c] == 14) ? 1 : 2;
-            objects[cur_enemy].sy = (level_data[c] == 14) ? 32 : 48;
-            objects[cur_enemy].dir = (level_data[c] == 14) ? LEFT : UP;
+            objects[cur_enemy].sx = 112; // Starting sprite x-coordinate
+            
+            if (level_data[c] == 14) {
+                // Horizontal ghost (red/orange ghost)
+                objects[cur_enemy].l = 1; // Type 1 = horizontal movement
+                objects[cur_enemy].sy = 32; // Red/orange ghost sprites
+                objects[cur_enemy].dir = (objects[cur_enemy].dx > 0 && level_data[c-1] == 0) ? LEFT : RIGHT;
+                objects[cur_enemy].base_sy = 32;
+            } else if (level_data[c] == 13) {
+                // Vertical ghost (blue ghost) 
+                objects[cur_enemy].l = 2; // Type 2 = vertical movement
+                objects[cur_enemy].sy = 48; // Blue ghost sprites
+                objects[cur_enemy].dir = (objects[cur_enemy].dy > 0 && level_data[c-LEVEL_WIDTH] == 0) ? UP : DOWN;
+                objects[cur_enemy].base_sy = 48;
+            } else if (level_data[c] == 15) {
+                // Special ghost (green/purple ghost) - diagonal or special movement
+                objects[cur_enemy].l = 3; // Type 3 = special/ghost movement
+                objects[cur_enemy].sy = 64; // Green/purple ghost sprites (assuming they're at sy=64)
+                objects[cur_enemy].dir = LEFT; // Default direction
+                objects[cur_enemy].base_sy = 64;
+            }
+            
+            // Initialize movement and animation fields
+            objects[cur_enemy].step = 0;
+            objects[cur_enemy].is_moving = false;
+            objects[cur_enemy].target_dx = objects[cur_enemy].dx;
+            objects[cur_enemy].target_dy = objects[cur_enemy].dy;
+            objects[cur_enemy].target_x = objects[cur_enemy].x;
+            objects[cur_enemy].target_y = objects[cur_enemy].y;
+            objects[cur_enemy].start_x = objects[cur_enemy].x;
+            objects[cur_enemy].start_y = objects[cur_enemy].y;
+            objects[cur_enemy].movement_start_time = 0;
+            objects[cur_enemy].current_frame = 0;
+            objects[cur_enemy].last_anim_time = get_time_us();
+            
+            ESP_LOGI("init", "Initialized enemy %d (type %d) at (%d,%d)", 
+                     cur_enemy, objects[cur_enemy].l, objects[cur_enemy].dx, objects[cur_enemy].dy);
             cur_enemy++;
         }
     }
@@ -1349,6 +1392,7 @@ bool is_passable(int tile_type) {
         case 11: // Block (pushable)
         case 13: // Enemy (vertical)
         case 14: // Enemy (horizontal)
+        case 15: // Enemy (special ghost)
         case 80: // Special wall/rock state (from original)
         case 255: // Reserved space (rock being pushed)
         default:
@@ -1552,6 +1596,425 @@ void move_block() {
     }
 }
 
+// Enemy movement system based on original Fruitland
+void move_type_hor(int e) {
+    // Horizontal enemy movement (type 14 - red/orange ghost)
+    if (freeze_enemy > 0) {
+        return; // Enemy frozen, don't move
+    }
+    
+    if (!objects[e].is_moving) {
+        // Not currently moving - check if we can/should move
+        int pos_left = 0, pos_right = 0;
+        
+        // Check if left position is available
+        if (objects[e].dx > 0) {
+            int left_tile = level_data[(objects[e].dx - 1) + objects[e].dy * LEVEL_WIDTH];
+            if (left_tile == 0 || left_tile == 81) {
+                pos_left = 1;
+            }
+        }
+        
+        // Check if right position is available
+        if (objects[e].dx < LEVEL_WIDTH - 1) {
+            int right_tile = level_data[(objects[e].dx + 1) + objects[e].dy * LEVEL_WIDTH];
+            if (right_tile == 0 || right_tile == 81) {
+                pos_right = 1;
+            }
+        }
+        
+        // Decide movement direction
+        bool should_move = false;
+        int new_dir = objects[e].dir;
+        
+        if (objects[e].dir == LEFT && pos_left) {
+            should_move = true;
+        } else if (objects[e].dir == RIGHT && pos_right) {
+            should_move = true;
+        } else if (objects[e].dir == LEFT && !pos_left && pos_right) {
+            // Hit wall going left, turn right
+            new_dir = RIGHT;
+            should_move = true;
+        } else if (objects[e].dir == RIGHT && !pos_right && pos_left) {
+            // Hit wall going right, turn left
+            new_dir = LEFT;
+            should_move = true;
+        }
+        
+        if (should_move) {
+            // Start movement
+            objects[e].dir = new_dir;
+            objects[e].target_dx = objects[e].dx + ((new_dir == LEFT) ? -1 : 1);
+            objects[e].target_dy = objects[e].dy;
+            objects[e].start_x = objects[e].x;
+            objects[e].start_y = objects[e].y;
+            objects[e].target_x = objects[e].target_dx * 16 + 8;
+            objects[e].target_y = objects[e].target_dy * 16 + 8;
+            objects[e].movement_start_time = get_time_us();
+            objects[e].is_moving = true;
+            
+            // Mark destination as occupied temporarily
+            level_data[objects[e].target_dx + objects[e].target_dy * LEVEL_WIDTH] = 81;
+        }
+    } else {
+        // Currently moving - update position
+        uint64_t current_time = get_time_us();
+        uint64_t elapsed = current_time - objects[e].movement_start_time;
+        
+        if (elapsed >= TILE_MOVEMENT_DURATION_US) {
+            // Movement complete
+            objects[e].is_moving = false;
+            
+            // Clear old position
+            level_data[objects[e].dx + objects[e].dy * LEVEL_WIDTH] = 0;
+            
+            // Update to new position
+            objects[e].dx = objects[e].target_dx;
+            objects[e].dy = objects[e].target_dy;
+            objects[e].x = objects[e].target_x;
+            objects[e].y = objects[e].target_y;
+        } else {
+            // Interpolate position
+            float progress = (float) elapsed / TILE_MOVEMENT_DURATION_US;
+            objects[e].x = objects[e].start_x + (objects[e].target_x - objects[e].start_x) * progress;
+            objects[e].y = objects[e].start_y + (objects[e].target_y - objects[e].start_y) * progress;
+        }
+    }
+    
+    // Update sprite animation
+    update_character_animation(&objects[e], objects[e].is_moving);
+    if (objects[e].is_moving) {
+        objects[e].sx = objects[e].base_sy == 32 ? 112 + (objects[e].current_frame % 2) * 16 : 112;
+    } else {
+        objects[e].sx = 112; // Idle frame
+    }
+}
+
+void move_type_ver(int e) {
+    // Vertical enemy movement (type 13 - blue ghost)
+    if (freeze_enemy > 0) {
+        return; // Enemy frozen, don't move
+    }
+    
+    if (!objects[e].is_moving) {
+        // Not currently moving - check if we can/should move
+        int pos_up = 0, pos_down = 0;
+        
+        // Check if up position is available
+        if (objects[e].dy > 0) {
+            int up_tile = level_data[objects[e].dx + (objects[e].dy - 1) * LEVEL_WIDTH];
+            if (up_tile == 0 || up_tile == 81) {
+                pos_up = 1;
+            }
+        }
+        
+        // Check if down position is available
+        if (objects[e].dy < LEVEL_HEIGHT - 1) {
+            int down_tile = level_data[objects[e].dx + (objects[e].dy + 1) * LEVEL_WIDTH];
+            if (down_tile == 0 || down_tile == 81) {
+                pos_down = 1;
+            }
+        }
+        
+        // Decide movement direction
+        bool should_move = false;
+        int new_dir = objects[e].dir;
+        
+        if (objects[e].dir == UP && pos_up) {
+            should_move = true;
+        } else if (objects[e].dir == DOWN && pos_down) {
+            should_move = true;
+        } else if (objects[e].dir == UP && !pos_up && pos_down) {
+            // Hit wall going up, turn down
+            new_dir = DOWN;
+            should_move = true;
+        } else if (objects[e].dir == DOWN && !pos_down && pos_up) {
+            // Hit wall going down, turn up
+            new_dir = UP;
+            should_move = true;
+        }
+        
+        if (should_move) {
+            // Start movement
+            objects[e].dir = new_dir;
+            objects[e].target_dx = objects[e].dx;
+            objects[e].target_dy = objects[e].dy + ((new_dir == UP) ? -1 : 1);
+            objects[e].start_x = objects[e].x;
+            objects[e].start_y = objects[e].y;
+            objects[e].target_x = objects[e].target_dx * 16 + 8;
+            objects[e].target_y = objects[e].target_dy * 16 + 8;
+            objects[e].movement_start_time = get_time_us();
+            objects[e].is_moving = true;
+            
+            // Mark destination as occupied temporarily
+            level_data[objects[e].target_dx + objects[e].target_dy * LEVEL_WIDTH] = 81;
+        }
+    } else {
+        // Currently moving - update position
+        uint64_t current_time = get_time_us();
+        uint64_t elapsed = current_time - objects[e].movement_start_time;
+        
+        if (elapsed >= TILE_MOVEMENT_DURATION_US) {
+            // Movement complete
+            objects[e].is_moving = false;
+            
+            // Clear old position
+            level_data[objects[e].dx + objects[e].dy * LEVEL_WIDTH] = 0;
+            
+            // Update to new position
+            objects[e].dx = objects[e].target_dx;
+            objects[e].dy = objects[e].target_dy;
+            objects[e].x = objects[e].target_x;
+            objects[e].y = objects[e].target_y;
+        } else {
+            // Interpolate position
+            float progress = (float) elapsed / TILE_MOVEMENT_DURATION_US;
+            objects[e].x = objects[e].start_x + (objects[e].target_x - objects[e].start_x) * progress;
+            objects[e].y = objects[e].start_y + (objects[e].target_y - objects[e].start_y) * progress;
+        }
+    }
+    
+    // Update sprite animation
+    update_character_animation(&objects[e], objects[e].is_moving);
+    if (objects[e].is_moving) {
+        objects[e].sx = objects[e].base_sy == 48 ? 112 + (objects[e].current_frame % 2) * 16 : 112;
+    } else {
+        objects[e].sx = 112; // Idle frame
+    }
+}
+
+void move_type_ghost(int e) {
+    // Special ghost movement (type 15 - green/purple ghost)
+    // This could implement more complex AI, like trying to follow the player
+    if (freeze_enemy > 0) {
+        return; // Enemy frozen, don't move
+    }
+    
+    if (!objects[e].is_moving) {
+        // Simple AI: try to move toward player, but still respect walls
+        int dx_diff = objects[0].dx - objects[e].dx;
+        int dy_diff = objects[0].dy - objects[e].dy;
+        
+        int preferred_dir = objects[e].dir; // Default to current direction
+        
+        // Decide preferred direction based on player position
+        if (abs(dx_diff) > abs(dy_diff)) {
+            // Prefer horizontal movement
+            preferred_dir = (dx_diff > 0) ? RIGHT : LEFT;
+        } else {
+            // Prefer vertical movement
+            preferred_dir = (dy_diff > 0) ? DOWN : UP;
+        }
+        
+        // Check if preferred direction is possible
+        bool can_move = false;
+        int target_dx = objects[e].dx;
+        int target_dy = objects[e].dy;
+        
+        switch (preferred_dir) {
+            case LEFT:
+                if (objects[e].dx > 0) {
+                    int tile = level_data[(objects[e].dx - 1) + objects[e].dy * LEVEL_WIDTH];
+                    if (tile == 0 || tile == 81) {
+                        target_dx = objects[e].dx - 1;
+                        can_move = true;
+                    }
+                }
+                break;
+            case RIGHT:
+                if (objects[e].dx < LEVEL_WIDTH - 1) {
+                    int tile = level_data[(objects[e].dx + 1) + objects[e].dy * LEVEL_WIDTH];
+                    if (tile == 0 || tile == 81) {
+                        target_dx = objects[e].dx + 1;
+                        can_move = true;
+                    }
+                }
+                break;
+            case UP:
+                if (objects[e].dy > 0) {
+                    int tile = level_data[objects[e].dx + (objects[e].dy - 1) * LEVEL_WIDTH];
+                    if (tile == 0 || tile == 81) {
+                        target_dy = objects[e].dy - 1;
+                        can_move = true;
+                    }
+                }
+                break;
+            case DOWN:
+                if (objects[e].dy < LEVEL_HEIGHT - 1) {
+                    int tile = level_data[objects[e].dx + (objects[e].dy + 1) * LEVEL_WIDTH];
+                    if (tile == 0 || tile == 81) {
+                        target_dy = objects[e].dy + 1;
+                        can_move = true;
+                    }
+                }
+                break;
+        }
+        
+        // If preferred direction doesn't work, try other directions
+        if (!can_move) {
+            // Try all four directions
+            int directions[] = {LEFT, RIGHT, UP, DOWN};
+            for (int i = 0; i < 4; i++) {
+                int dir = directions[i];
+                target_dx = objects[e].dx;
+                target_dy = objects[e].dy;
+                
+                switch (dir) {
+                    case LEFT:
+                        if (objects[e].dx > 0) {
+                            int tile = level_data[(objects[e].dx - 1) + objects[e].dy * LEVEL_WIDTH];
+                            if (tile == 0 || tile == 81) {
+                                target_dx = objects[e].dx - 1;
+                                preferred_dir = LEFT;
+                                can_move = true;
+                            }
+                        }
+                        break;
+                    case RIGHT:
+                        if (objects[e].dx < LEVEL_WIDTH - 1) {
+                            int tile = level_data[(objects[e].dx + 1) + objects[e].dy * LEVEL_WIDTH];
+                            if (tile == 0 || tile == 81) {
+                                target_dx = objects[e].dx + 1;
+                                preferred_dir = RIGHT;
+                                can_move = true;
+                            }
+                        }
+                        break;
+                    case UP:
+                        if (objects[e].dy > 0) {
+                            int tile = level_data[objects[e].dx + (objects[e].dy - 1) * LEVEL_WIDTH];
+                            if (tile == 0 || tile == 81) {
+                                target_dy = objects[e].dy - 1;
+                                preferred_dir = UP;
+                                can_move = true;
+                            }
+                        }
+                        break;
+                    case DOWN:
+                        if (objects[e].dy < LEVEL_HEIGHT - 1) {
+                            int tile = level_data[objects[e].dx + (objects[e].dy + 1) * LEVEL_WIDTH];
+                            if (tile == 0 || tile == 81) {
+                                target_dy = objects[e].dy + 1;
+                                preferred_dir = DOWN;
+                                can_move = true;
+                            }
+                        }
+                        break;
+                }
+                if (can_move) break;
+            }
+        }
+        
+        if (can_move) {
+            // Start movement
+            objects[e].dir = preferred_dir;
+            objects[e].target_dx = target_dx;
+            objects[e].target_dy = target_dy;
+            objects[e].start_x = objects[e].x;
+            objects[e].start_y = objects[e].y;
+            objects[e].target_x = target_dx * 16 + 8;
+            objects[e].target_y = target_dy * 16 + 8;
+            objects[e].movement_start_time = get_time_us();
+            objects[e].is_moving = true;
+            
+            // Mark destination as occupied temporarily
+            level_data[target_dx + target_dy * LEVEL_WIDTH] = 81;
+        }
+    } else {
+        // Currently moving - update position
+        uint64_t current_time = get_time_us();
+        uint64_t elapsed = current_time - objects[e].movement_start_time;
+        
+        if (elapsed >= TILE_MOVEMENT_DURATION_US) {
+            // Movement complete
+            objects[e].is_moving = false;
+            
+            // Clear old position
+            level_data[objects[e].dx + objects[e].dy * LEVEL_WIDTH] = 0;
+            
+            // Update to new position
+            objects[e].dx = objects[e].target_dx;
+            objects[e].dy = objects[e].target_dy;
+            objects[e].x = objects[e].target_x;
+            objects[e].y = objects[e].target_y;
+        } else {
+            // Interpolate position
+            float progress = (float) elapsed / TILE_MOVEMENT_DURATION_US;
+            objects[e].x = objects[e].start_x + (objects[e].target_x - objects[e].start_x) * progress;
+            objects[e].y = objects[e].start_y + (objects[e].target_y - objects[e].start_y) * progress;
+        }
+    }
+    
+    // Update sprite animation
+    update_character_animation(&objects[e], objects[e].is_moving);
+    if (objects[e].is_moving) {
+        objects[e].sx = objects[e].base_sy == 64 ? 112 + (objects[e].current_frame % 2) * 16 : 112;
+    } else {
+        objects[e].sx = 112; // Idle frame
+    }
+}
+
+void move_enemy(void) {
+    if (freeze_enemy > 0) {
+        freeze_enemy--;
+        return;
+    }
+    
+    for (int c = 1; c < 5; c++) {
+        if (objects[c].l == 1) {
+            move_type_hor(c); // Horizontal movement
+        } else if (objects[c].l == 2) {
+            move_type_ver(c); // Vertical movement
+        } else if (objects[c].l == 3) {
+            move_type_ghost(c); // Special ghost movement
+        }
+    }
+}
+
+// Collision detection system from original game
+void check_overlap(int i) {
+    if (!objects[i].l) return; // Object not active
+    
+    int sx = objects[i].x;
+    int sy = objects[i].y;
+    
+    // Check collision with rocks (5-14) if this is an enemy
+    int start_check = (i == 0) ? 5 : 1; // Player checks rocks, enemies check player
+    int end_check = (i == 0) ? 15 : 1;
+    
+    for (int c = start_check; c < end_check; c++) {
+        if (objects[c].l && i != c) {
+            int sx1 = objects[c].x;
+            int sy1 = objects[c].y;
+            
+            // Check if sprites overlap (using 13 pixel threshold like original)
+            if (abs(sx1 - sx) < 13 && abs(sy1 - sy) < 13) {
+                if (i == 0) {
+                    // Player hit something
+                    if (c >= 1 && c <= 4) {
+                        // Player hit enemy - player dies
+                        dead = 1;
+                        ESP_LOGI("collision", "Player hit enemy %d!", c);
+                    }
+                } else {
+                    // Enemy hit player - player dies
+                    if (c == 0) {
+                        dead = 1;
+                        ESP_LOGI("collision", "Enemy %d hit player!", i);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void check_collision(void) {
+    // Check collisions for player and all enemies
+    for (int e = 0; e < 5; e++) {
+        check_overlap(e);
+    }
+}
+
 // Render game objects with optimized rendering
 void print_objects() {
     SDL_SetRenderTarget(renderer, game_surface);
@@ -1579,14 +2042,21 @@ void print_objects() {
         SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
     }
 
-    // Render enemies (objects 1-4) - simplified for now
-    for (int nc = 1; nc < 5; nc++) {
-        if (objects[nc].l) {
-            SDL_FRect src_rect = {(float) objects[nc].sx, (float) objects[nc].sy, 16.0f, 16.0f};
-            SDL_FRect dst_rect = {(float) objects[nc].x, (float) objects[nc].y, 16.0f, 16.0f};
-            SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
-        }
-    }
+                // Render enemies (objects 1-4) with proper animations
+                for (int nc = 1; nc < 5; nc++) {
+                    if (objects[nc].l) {
+                        SDL_FRect src_rect = {(float) objects[nc].sx, (float) objects[nc].sy, 16.0f, 16.0f};
+                        SDL_FRect dst_rect = {(float) objects[nc].x, (float) objects[nc].y, 16.0f, 16.0f};
+                        SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
+                        
+                        // Log enemy positions for debugging
+                        static int debug_enemy_counter = 0;
+                        if ((++debug_enemy_counter % 300) == nc) { // Log every 5 seconds per enemy
+                            ESP_LOGI("enemy_render", "Enemy %d (type %d) at (%d,%d) sprite(%d,%d)", 
+                                     nc, objects[nc].l, objects[nc].dx, objects[nc].dy, objects[nc].sx, objects[nc].sy);
+                        }
+                    }
+                }
 }
 
 // Tile-based player movement with continuous smooth sliding
@@ -1952,6 +2422,8 @@ int game() {
             move_player();
             move_rocks(); // Handle rock gravity and movement
             move_block(); // Handle pushable block movement
+            move_enemy(); // Handle enemy movement
+            check_collision(); // Check player-enemy collisions
 
             // Decrease time every second (TARGET_FPS frames at target fps)
             static int time_counter = 0;
