@@ -128,6 +128,7 @@ static int lives;
 static int fruit;
 static int dead;
 static int freeze_enemy;
+static int level_change_requested = 0; // Flag to track F2/F3 level changes
 static int game_running = 1;
 
 #ifdef CONFIG_IDF_TARGET_ESP32P4
@@ -683,6 +684,8 @@ static void fb_draw_level_tile(int tile_x, int tile_y, int tile_type) {
             break; // Rock - brown
         case 4: tile_color = rgb_to_rgb565(255, 0, 0);
             break; // Fruit - red
+        case 11: tile_color = rgb_to_rgb565(192, 192, 192);
+            break; // Stone block - light gray
         default: tile_color = rgb_to_rgb565(128, 128, 128);
             break; // Other - gray
     }
@@ -758,6 +761,7 @@ void init_render_system() {
 #endif
 
     ESP_LOGI("game", "Starting game...");
+    ESP_LOGI("debug", "🎮 Level Navigation: F2 = Previous Level | F3 = Next Level | ESC = Exit");
 }
 
 void cleanup_render_system() {
@@ -1504,18 +1508,34 @@ void move_rocks() {
     }
 }
 
-// Move pushable block (object 15) - simplified version
+// Move pushable stone block (object 15) - Sokoban-style movement
 void move_block() {
     if (objects[15].l && objects[15].is_moving) {
         uint64_t current_time = get_time_us();
         uint64_t elapsed = current_time - objects[15].movement_start_time;
 
         if (elapsed >= TILE_MOVEMENT_DURATION_US) {
-            // Movement complete
+            // Movement complete - stone block becomes stationary tile
             objects[15].is_moving = false;
-            objects[15].l = 0; // Block disappears after moving
+            objects[15].dir = 0;
+            
+            // Update final position (should already be set, but ensure consistency)
+            objects[15].x = objects[15].target_x;
+            objects[15].y = objects[15].target_y;
+            
+            // Deactivate object - the stone block is now handled by level tile 11
+            objects[15].l = 0; // Deactivate object, level tile takes over
+            
+            // Ensure level data is set correctly at final position
+            level_data[objects[15].dx + objects[15].dy * LEVEL_WIDTH] = 11;
+            
+            ESP_LOGI("stone_block", "Stone block movement completed at (%d,%d) - object deactivated, level tile active", 
+                     objects[15].dx, objects[15].dy);
+            
+            // Force a full redraw to ensure the level tile is drawn
+            full_redraw_needed = true;
         } else {
-            // Interpolate position
+            // Interpolate position during movement
             float progress = (float) elapsed / TILE_MOVEMENT_DURATION_US;
             if (progress > 1.0f) progress = 1.0f;
 
@@ -1576,6 +1596,37 @@ void move_player() {
     if (keyboard_state[SDL_SCANCODE_ESCAPE]) {
         dead = 1;
         return;
+    }
+
+    // Handle level navigation keys for testing
+    static bool f2_pressed = false, f3_pressed = false;
+    
+    if (keyboard_state[SDL_SCANCODE_F2] && !f2_pressed) {
+        // Previous level (F2) - only trigger once per press
+        if (level > 1) {
+            level--;
+            level_change_requested = 1; // Set flag to indicate level change
+            fruit = 0; // End current level
+            ESP_LOGI("debug", "F2 pressed - moving to previous level %d", level);
+        }
+        f2_pressed = true;
+        return;
+    } else if (!keyboard_state[SDL_SCANCODE_F2]) {
+        f2_pressed = false;
+    }
+    
+    if (keyboard_state[SDL_SCANCODE_F3] && !f3_pressed) {
+        // Next level (F3) - only trigger once per press
+        if (level < 25) {
+            level++;
+            level_change_requested = 1; // Set flag to indicate level change
+            fruit = 0; // End current level
+            ESP_LOGI("debug", "F3 pressed - moving to next level %d", level);
+        }
+        f3_pressed = true;
+        return;
+    } else if (!keyboard_state[SDL_SCANCODE_F3]) {
+        f3_pressed = false;
     }
 
     // Not currently moving - check for new movement input
@@ -1639,87 +1690,133 @@ void move_player() {
     // Check if target tile is passable or pushable
     int target_tile = level_data[target_dx + target_dy * LEVEL_WIDTH];
 
-    // Handle rock pushing (type 3 = rock) - now supports all directions like original
-    if (target_tile == 3) {
+    // Handle stone block pushing (type 11 = stone block) - Sokoban-style like original
+    if (target_tile == 11) {
+        // Stone blocks are handled by object 15 and use simple Sokoban rules
+        int push_target_dx = target_dx;
+        int push_target_dy = target_dy;
+        
+        // Calculate push destination
+        if (direction == LEFT) {
+            if (target_dx <= 0) return; // At left edge
+            push_target_dx = target_dx - 1;
+        } else if (direction == RIGHT) {
+            if (target_dx >= LEVEL_WIDTH - 1) return; // At right edge  
+            push_target_dx = target_dx + 1;
+        } else if (direction == UP) {
+            if (target_dy <= 0) return; // At top edge
+            push_target_dy = target_dy - 1;
+        } else if (direction == DOWN) {
+            if (target_dy >= LEVEL_HEIGHT - 1) return; // At bottom edge
+            push_target_dy = target_dy + 1;
+        }
+        
+        // Check if push destination is free (basic Sokoban rule)
+        int destination_tile = level_data[push_target_dx + push_target_dy * LEVEL_WIDTH];
+        if (destination_tile != 0) {
+            ESP_LOGD("stone_push", "Stone block destination (%d,%d) blocked by tile %d", 
+                     push_target_dx, push_target_dy, destination_tile);
+            return; // Destination blocked
+        }
+        
+        // Stone block push is allowed - set up object 15 movement
+        ESP_LOGI("stone_push", "Pushing stone block %s from (%d,%d) to (%d,%d)",
+                 (direction == LEFT) ? "left" : (direction == RIGHT) ? "right" :
+                 (direction == UP) ? "up" : "down",
+                 target_dx, target_dy, push_target_dx, push_target_dy);
+        
+        // Clear old stone block position
+        level_data[target_dx + target_dy * LEVEL_WIDTH] = 0;
+        
+        // Set up object 15 (stone block) movement
+        objects[15].l = 1; // Activate stone block object
+        objects[15].dx = push_target_dx; // Set logical position  
+        objects[15].dy = push_target_dy;
+        objects[15].start_x = target_dx * 16 + 8; // Animation start position
+        objects[15].start_y = target_dy * 16 + 8;
+        objects[15].target_x = push_target_dx * 16 + 8; // Animation target
+        objects[15].target_y = push_target_dy * 16 + 8;
+        objects[15].x = objects[15].start_x; // Current position for animation
+        objects[15].y = objects[15].start_y;
+        objects[15].movement_start_time = get_time_us();
+        objects[15].is_moving = true;
+        objects[15].dir = direction;
+        
+        // Place stone block at destination in level data
+        level_data[push_target_dx + push_target_dy * LEVEL_WIDTH] = 11;
+        
+        // Player can move into the stone block's old position
+    } else if (target_tile == 3) {
+        // Handle rock pushing (type 3 = rock) - simplified to match original behavior
+        // Find the rock object at target position
         int rock_idx = search_rock(target_dx, target_dy);
         if (rock_idx < 0) {
             ESP_LOGD("push", "Rock not found at (%d,%d)", target_dx, target_dy);
             return;
         }
 
-        bool can_push = false;
+        // Calculate push destination based on direction (Sokoban-style)
         int push_target_dx = target_dx;
         int push_target_dy = target_dy;
-
-        if (direction == LEFT && target_dx > 0) {
+        
+        if (direction == LEFT) {
+            if (target_dx <= 0) return; // At left edge, cannot push
             push_target_dx = target_dx - 1;
-            int beyond_rock_tile = level_data[push_target_dx + push_target_dy * LEVEL_WIDTH];
-            if (beyond_rock_tile == 0) {
-                // Additional check from original: if rock is being pushed left,
-                // check if it would be stable (not fall immediately unless there's support)
-                if (push_target_dy < LEVEL_HEIGHT - 1) {
-                    int below_push_target = level_data[push_target_dx + (push_target_dy + 1) * LEVEL_WIDTH];
-                    if (below_push_target == 0) {
-                        ESP_LOGD("push", "Rock would fall after being pushed left - allowing push");
-                    }
-                }
-                can_push = true;
-            }
-        } else if (direction == RIGHT && target_dx < LEVEL_WIDTH - 1) {
+        } else if (direction == RIGHT) {
+            if (target_dx >= LEVEL_WIDTH - 1) return; // At right edge, cannot push
             push_target_dx = target_dx + 1;
-            int beyond_rock_tile = level_data[push_target_dx + push_target_dy * LEVEL_WIDTH];
-            if (beyond_rock_tile == 0) {
-                // Additional check from original: if rock is being pushed right,
-                // check if it would be stable (not fall immediately unless there's support)
-                if (push_target_dy < LEVEL_HEIGHT - 1) {
-                    int below_push_target = level_data[push_target_dx + (push_target_dy + 1) * LEVEL_WIDTH];
-                    if (below_push_target == 0) {
-                        ESP_LOGD("push", "Rock would fall after being pushed right - allowing push");
-                    }
-                }
-                can_push = true;
-            }
-        } else if (direction == UP && target_dy > 0) {
-            // Pushing rocks up is allowed in original game
+        } else if (direction == UP) {
+            if (target_dy <= 0) return; // At top edge, cannot push
             push_target_dy = target_dy - 1;
-            int beyond_rock_tile = level_data[push_target_dx + push_target_dy * LEVEL_WIDTH];
-            if (beyond_rock_tile == 0) {
-                can_push = true;
-                ESP_LOGI("push", "Pushing rock up from (%d,%d) to (%d,%d)", target_dx, target_dy, push_target_dx, push_target_dy);
+        } else if (direction == DOWN) {
+            // In original game, pushing rocks down was not allowed
+            ESP_LOGD("push", "Cannot push rock down - not allowed in original");
+            return;
+        }
+
+        // Check if push destination is free (basic Sokoban rule)
+        int destination_tile = level_data[push_target_dx + push_target_dy * LEVEL_WIDTH];
+        if (destination_tile != 0) {
+            ESP_LOGD("push", "Push destination (%d,%d) blocked by tile %d", push_target_dx, push_target_dy, destination_tile);
+            return; // Destination blocked, cannot push
+        }
+
+        // Additional stability check for LEFT/RIGHT pushes (from original)
+        if (direction == LEFT || direction == RIGHT) {
+            // Check if rock would be stable after push (has support below)
+            if (push_target_dy < LEVEL_HEIGHT - 1) {
+                int below_target = level_data[push_target_dx + (push_target_dy + 1) * LEVEL_WIDTH];
+                if (below_target == 0) {
+                    ESP_LOGD("push", "Rock would be unsupported after push - blocking");
+                    return; // Rock would fall, don't allow push
+                }
             }
-        } else if (direction == DOWN && target_dy < LEVEL_HEIGHT - 1) {
-            // In original game, pushing rocks down was not allowed (see line 1004-1005 in original)
-            // "bij omlaag gaan kan rots verschuiven niet" = "when going down rocks cannot be moved"
-            ESP_LOGD("push", "Can't push rock down - not allowed in original game");
-            return;
         }
 
-        if (can_push) {
-            // Clear old rock position
-            level_data[target_dx + target_dy * LEVEL_WIDTH] = 0;
-            
-            // Set up rock movement
-            objects[rock_idx].target_dx = push_target_dx;
-            objects[rock_idx].target_dy = push_target_dy;
-            objects[rock_idx].start_x = objects[rock_idx].x;
-            objects[rock_idx].start_y = objects[rock_idx].y;
-            objects[rock_idx].target_x = push_target_dx * 16 + 8;
-            objects[rock_idx].target_y = push_target_dy * 16 + 8;
-            objects[rock_idx].movement_start_time = get_time_us();
-            objects[rock_idx].is_moving = true;
-            objects[rock_idx].dir = direction;
+        // Push is allowed - set up rock movement (using time-based animation)
+        ESP_LOGI("push", "Pushing rock %s from (%d,%d) to (%d,%d)",
+                 (direction == LEFT) ? "left" : (direction == RIGHT) ? "right" :
+                 (direction == UP) ? "up" : "down",
+                 target_dx, target_dy, push_target_dx, push_target_dy);
 
-            // Mark destination as reserved
-            level_data[push_target_dx + push_target_dy * LEVEL_WIDTH] = 255;
-            
-            ESP_LOGI("push", "Pushing rock %s from (%d,%d) to (%d,%d)", 
-                     (direction == LEFT) ? "left" : (direction == RIGHT) ? "right" : 
-                     (direction == UP) ? "up" : "down",
-                     target_dx, target_dy, push_target_dx, push_target_dy);
-        } else {
-            ESP_LOGD("push", "Can't push rock - blocked or at edge");
-            return;
-        }
+        // Clear old rock position in level data
+        level_data[target_dx + target_dy * LEVEL_WIDTH] = 0;
+        
+        // Set up rock movement animation
+        objects[rock_idx].target_dx = push_target_dx;
+        objects[rock_idx].target_dy = push_target_dy;
+        objects[rock_idx].start_x = objects[rock_idx].x;
+        objects[rock_idx].start_y = objects[rock_idx].y;
+        objects[rock_idx].target_x = push_target_dx * 16 + 8;
+        objects[rock_idx].target_y = push_target_dy * 16 + 8;
+        objects[rock_idx].movement_start_time = get_time_us();
+        objects[rock_idx].is_moving = true;
+        objects[rock_idx].dir = direction;
+
+        // Mark destination as reserved to prevent conflicts
+        level_data[push_target_dx + push_target_dy * LEVEL_WIDTH] = 255;
+        
+        // Player can move into the rock's old position
     } else if (!is_passable(target_tile)) {
         ESP_LOGD("movement", "Target tile (%d, %d) blocked by tile type %d", target_dx, target_dy, target_tile);
         return;
@@ -1747,11 +1844,16 @@ void move_player() {
              objects[0].dx, objects[0].dy, target_dx, target_dy);
 }
 
-// Initialize pushable block sprite coordinates
+// Initialize pushable stone block sprite coordinates (object 15)
 void init_block_sprite() {
-    objects[15].sx = 11 * 16;
-    objects[15].sy = 16;
-    objects[15].l = 0; // Initially not active
+    // Reset object 15 (stone block handler)
+    memset(&objects[15], 0, sizeof(objects[15]));
+    objects[15].sx = 11 * 16; // Sprite x-coordinate (11th tile in patterns.bmp)
+    objects[15].sy = 16;      // Sprite y-coordinate (second row)
+    objects[15].l = 0;        // Initially not active
+    objects[15].is_moving = false;
+    objects[15].dir = 0;
+    ESP_LOGD("init", "Stone block object 15 initialized and ready");
 }
 
 // Main game loop
@@ -1762,12 +1864,14 @@ int game() {
 
     while (level <= 25 && lives > 0) {
         reset_level_drawing(); // Reset level drawing flag for new level
+        ESP_LOGI("game", "🎯 Starting Level %d (Lives: %d, Score: %d)", level, lives, score);
         init_level_data();
         print_level();
         count_fruit();
         init_objects();
         dead = 0;
         freeze_enemy = 0;
+        level_change_requested = 0; // Reset level change flag for new level
 
         // Calculate scaling factor once for ESP32-P4 PPA optimization
         static float cached_scale = 0;
@@ -1801,7 +1905,7 @@ int game() {
         last_frame_time = get_time_us();
 
         // Game loop for current level - optimized with dirty rectangles
-        while (fruit > 0 && av_time > 0 && !dead) {
+        while (fruit > 0 && av_time > 0 && !dead && !level_change_requested) {
             uint64_t frame_start = get_time_us();
 
             SDL_Event event;
@@ -1834,6 +1938,7 @@ int game() {
             static int prev_player_x = -1, prev_player_y = -1;
             static int prev_rock_x[10] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
             static int prev_rock_y[10] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+            static int prev_block_x = -1, prev_block_y = -1; // Stone block position tracking
             static bool first_render = true;
 
             // Update game state
@@ -1865,8 +1970,12 @@ int game() {
                 }
             }
 
+            // Check if stone block moved
+            bool block_moved = (objects[15].l && 
+                               (objects[15].x != prev_block_x || objects[15].y != prev_block_y));
+
             // Efficient rendering: only render when something actually changed
-            bool should_render = player_moved || rocks_moved || stats_changed || first_render || full_redraw_needed;
+            bool should_render = player_moved || rocks_moved || block_moved || stats_changed || first_render || full_redraw_needed;
 
             // Skip rendering if nothing changed
             if (!should_render) {
@@ -1948,6 +2057,17 @@ int game() {
                         }
                     }
 
+                    // Draw stone block (object 15) using fast direct framebuffer
+                    if (objects[15].l) {
+                        uint16_t stone_color = rgb_to_rgb565(128, 128, 128); // Gray for stone block
+                        fb_draw_rect(objects[15].x, objects[15].y, 16, 16, stone_color);
+                        prev_block_x = objects[15].x;
+                        prev_block_y = objects[15].y;
+                    } else {
+                        prev_block_x = -1;
+                        prev_block_y = -1;
+                    }
+
                     prev_player_x = objects[0].x;
                     prev_player_y = objects[0].y;
 
@@ -1988,6 +2108,12 @@ int game() {
                             }
                         }
                     }
+
+                    if (block_moved && prev_block_x >= 0) {
+                        SDL_FRect clear_rect = {prev_block_x, prev_block_y, 16, 16};
+                        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                        SDL_RenderFillRect(renderer, &clear_rect);
+                    }
                 }
 
                 // Draw all active objects in one efficient pass
@@ -2012,6 +2138,18 @@ int game() {
                         prev_rock_x[r - 5] = -1;
                         prev_rock_y[r - 5] = -1;
                     }
+                }
+
+                // Stone block (object 15)
+                if (objects[15].l) {
+                    SDL_FRect src_rect = {objects[15].sx, objects[15].sy, 16, 16}; // Stone block sprite (11*16, 16)
+                    SDL_FRect dst_rect = {objects[15].x, objects[15].y, 16, 16};
+                    SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
+                    prev_block_x = objects[15].x;
+                    prev_block_y = objects[15].y;
+                } else {
+                    prev_block_x = -1;
+                    prev_block_y = -1;
                 }
 
                 // Handle stats changes
@@ -2076,7 +2214,11 @@ int game() {
             wait_for_frame_time();
         }
 
-        if (av_time == 0 || dead) {
+        if (level_change_requested) {
+            // F2/F3 level change - don't modify lives or score
+            level_change_requested = 0; // Reset the flag
+            ESP_LOGI("debug", "Level changed to %d via F2/F3", level);
+        } else if (av_time == 0 || dead) {
             lives--;
         } else if (fruit == 0) {
             level++;

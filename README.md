@@ -47,6 +47,57 @@ idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults.m5stack_core_s3" build flash mo
 - **🎮 Responsive Controls**: Touch, button, or USB keyboard input depending on board capabilities
 - **⌨️ USB Keyboard Support**: Full keyboard input on ESP32-P4 boards with USB host capability
 
+## 🎮 Game Mechanics & Tile System
+
+### Level Data Format
+The game uses a 15×11 grid for each level, stored in `assets/fruit.dat`:
+- **25 levels** total
+- **169 bytes per level** (15×11 + 4 bytes time data)
+- **Direct tile ID mapping** to sprite sheet `assets/patterns.bmp`
+
+### Tile ID Reference (from patterns.bmp sprite sheet)
+| ID | Hex | Sprite Description | Behavior |
+|----|-----|-------------------|----------|
+| 0 | 0x00 | Empty/Black | Passable |
+| 1 | 0x01 | Small Dot | Collectible (10 points) |
+| 2 | 0x02 | Wall | Solid obstacle |
+| 3 | 0x03 | Rock/Ball | Pushable with gravity |
+| 4 | 0x04 | Cherry/Fruit | Collectible (500 points) |
+| 5 | 0x05 | Bonus (100) | Collectible (100 points) |
+| 6 | 0x06 | Teleporter | Transport to other teleporter |
+| 7 | 0x07 | Time Bonus | Adds extra time |
+| 8 | 0x08 | Screen Flip | Rotates/flips the level |
+| 9 | 0x09 | Extra Life (1UP) | Adds one life |
+| 10 | 0x0A | Power-Up | Special ability |
+| 11 | 0x0B | **Stone Block** | **Sokoban-style pushable** |
+| 12 | 0x0C | Skull | Deadly trap |
+| 13 | 0x0D | Red Ghost | Vertical enemy |
+| 14 | 0x0E | Blue Ghost | Horizontal enemy |
+| 80 | 0x50 | Moving marker | Temporary state |
+| 81 | 0x51 | Enemy marker | Path marker |
+| 255 | 0xFF | Reserved space | Temporary reservation |
+
+### Object System
+The game manages 16 objects with different behaviors:
+- **Object 0**: Player character
+- **Objects 1-4**: Enemies (ghosts)
+- **Objects 5-14**: Rocks with gravity (tile ID 3)
+- **Object 15**: Stone blocks - Sokoban-style (tile ID 11)
+
+### Stone Block vs Rock Mechanics
+#### Rocks (Tile ID 3)
+- **Have gravity** - fall when unsupported
+- **Complex pushing rules** - stability checks
+- **Can be pushed LEFT/RIGHT/UP** (not DOWN)
+- **Objects 5-14** handle these
+
+#### Stone Blocks (Tile ID 11) 
+- **No gravity** - stay where pushed
+- **Simple Sokoban rules** - push if destination empty
+- **Can be pushed in ALL directions**
+- **Object 15** handles these
+- **This is what Level 2 uses!**
+
 ### Alternative: Using ESPBrew
 ```bash
 # Multi-board build manager with TUI (PSRAM boards only)
