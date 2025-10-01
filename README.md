@@ -195,12 +195,20 @@ Assets are automatically packed into the LittleFS partition during the build pro
 **Fruitland** includes full USB keyboard support for ESP32-P4 boards with USB host capability:
 
 ### 🎮 Keyboard Controls
-- **Arrow Keys**: Move player character
-- **WASD Keys**: Alternative movement controls
+
+#### 🕹️ Movement Controls (Both supported simultaneously):
+- **Arrow Keys** (↑↓←→): Move player character
+- **WASD Keys**: W=Up, A=Left, S=Down, D=Right (Popular with gamers!)
+
+#### ⚡ Action Keys:
 - **Space**: Action/Select
 - **Enter**: Pause/Menu
 - **ESC**: Quit game
-- **Function Keys**: Debug features (F1-F12)
+
+#### 🔧 Debug Controls (Development/Testing):
+- **F2**: Previous level (for testing)
+- **F3**: Next level (for testing)
+- **F1, F4-F12**: Additional debug features
 
 ### 🔌 Hardware Requirements
 - **ESP32-P4 Board**: M5Stack Tab5, ESP32-P4 Function EV Board

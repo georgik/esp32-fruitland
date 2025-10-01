@@ -761,7 +761,8 @@ void init_render_system() {
 #endif
 
     ESP_LOGI("game", "Starting game...");
-    ESP_LOGI("debug", "🎮 Level Navigation: F2 = Previous Level | F3 = Next Level | ESC = Exit");
+    ESP_LOGI("controls", "🎮 Movement: Arrow Keys OR WASD | ESC = Exit");
+    ESP_LOGI("debug", "🔧 Debug: F2 = Previous Level | F3 = Next Level");
 }
 
 void cleanup_render_system() {
@@ -1532,8 +1533,14 @@ void move_block() {
             ESP_LOGI("stone_block", "Stone block movement completed at (%d,%d) - object deactivated, level tile active", 
                      objects[15].dx, objects[15].dy);
             
-            // Force a full redraw to ensure the level tile is drawn
-            full_redraw_needed = true;
+            // Immediately draw the stone block tile at its final position to prevent flicker
+            SDL_SetRenderTarget(renderer, game_surface);
+            int tile = 11; // Stone block tile
+            int xx = tile % 16;
+            int yy = tile / 16; 
+            SDL_FRect src_rect = {(float)(xx * 16), (float)(yy * 16 + 16), 16.0f, 16.0f};
+            SDL_FRect dst_rect = {(float)(objects[15].dx * 16 + 8), (float)(objects[15].dy * 16 + 8), 16.0f, 16.0f};
+            SDL_RenderTexture(renderer, patterns_texture, &src_rect, &dst_rect);
         } else {
             // Interpolate position during movement
             float progress = (float) elapsed / TILE_MOVEMENT_DURATION_US;
@@ -1663,20 +1670,20 @@ void move_player() {
     }
 #endif
 
-    // If no accelerometer move, check keyboard input
-    if (direction == 0 && keyboard_state[SDL_SCANCODE_UP] && objects[0].dy > 0) {
+    // If no accelerometer move, check keyboard input (Arrow keys or WASD)
+    if (direction == 0 && (keyboard_state[SDL_SCANCODE_UP] || keyboard_state[SDL_SCANCODE_W]) && objects[0].dy > 0) {
         target_dy = objects[0].dy - 1;
         direction = UP;
         sprite_sy = 64; // Up-facing sprite
-    } else if (keyboard_state[SDL_SCANCODE_DOWN] && objects[0].dy < LEVEL_HEIGHT - 1) {
+    } else if ((keyboard_state[SDL_SCANCODE_DOWN] || keyboard_state[SDL_SCANCODE_S]) && objects[0].dy < LEVEL_HEIGHT - 1) {
         target_dy = objects[0].dy + 1;
         direction = DOWN;
         sprite_sy = 80; // Down-facing sprite
-    } else if (keyboard_state[SDL_SCANCODE_LEFT] && objects[0].dx > 0) {
+    } else if ((keyboard_state[SDL_SCANCODE_LEFT] || keyboard_state[SDL_SCANCODE_A]) && objects[0].dx > 0) {
         target_dx = objects[0].dx - 1;
         direction = LEFT;
         sprite_sy = 32; // Left-facing sprite
-    } else if (keyboard_state[SDL_SCANCODE_RIGHT] && objects[0].dx < LEVEL_WIDTH - 1) {
+    } else if ((keyboard_state[SDL_SCANCODE_RIGHT] || keyboard_state[SDL_SCANCODE_D]) && objects[0].dx < LEVEL_WIDTH - 1) {
         target_dx = objects[0].dx + 1;
         direction = RIGHT;
         sprite_sy = 48; // Right-facing sprite
