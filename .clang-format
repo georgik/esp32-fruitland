@@ -1,0 +1,43 @@
+# .clang-format configuration for ESP-IDF compatible formatting
+# Simplified version focusing on core ESP-IDF style requirements
+
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# Core ESP-IDF formatting requirements
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+
+# OTBS (One True Brace Style) - ESP-IDF standard
+BreakBeforeBraces: Attach
+
+# ESP-IDF pointer/reference alignment
+PointerAlignment: Right
+ReferenceAlignment: Right
+
+# Spacing preferences
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeParens: ControlStatements
+SpacesBeforeTrailingComments: 2
+
+# Allow flexible formatting for embedded code
+AllowShortBlocksOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortIfStatementsOnASingleLine: true
+AllowShortLoopsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: Empty
+
+# Preserve existing include order
+SortIncludes: false
+
+# Be conservative with line breaking
+BinPackArguments: true
+BinPackParameters: true
+
+# Standard settings
+IndentCaseLabels: true
+KeepEmptyLinesAtTheStartOfBlocks: true
+MaxEmptyLinesToKeep: 2

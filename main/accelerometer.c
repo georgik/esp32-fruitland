@@ -1,7 +1,7 @@
 /**
  * @file accelerometer.c
  * @brief Accelerometer input implementation for ESP32-Fruitland
- * 
+ *
  * Based on ICM42670 6-axis accelerometer for ESP32-S3-BOX-3.
  * Provides motion control by translating device tilt to directional input.
  */
@@ -33,11 +33,11 @@ static icm42670_handle_t icm42670_handle = NULL;
 static i2c_master_bus_handle_t i2c_handle = NULL;
 
 // Configuration parameters for intuitive tilt detection - tuned for ESP32-S3-BOX-3
-static float small_tilt_threshold = 0.2f;  // Light tilt threshold for single move (reduced for easier use)
-static float large_tilt_threshold = 0.45f; // Stronger tilt threshold for continuous movement (reduced)
-static float deadzone = 0.08f; // Deadzone to prevent jitter (reduced for more sensitivity)
-static bool invert_x = true; // Invert X-axis - ESP32-S3-BOX-3 needs this for correct tilt direction
-static bool invert_y = false; // Invert Y-axis if needed
+static float small_tilt_threshold = 0.2f;   // Light tilt threshold for single move (reduced for easier use)
+static float large_tilt_threshold = 0.45f;  // Stronger tilt threshold for continuous movement (reduced)
+static float deadzone = 0.08f;              // Deadzone to prevent jitter (reduced for more sensitivity)
+static bool invert_x = true;                // Invert X-axis - ESP32-S3-BOX-3 needs this for correct tilt direction
+static bool invert_y = false;               // Invert Y-axis if needed
 
 // Enhanced state tracking for improved tilt detection
 static bool prev_left = false;
@@ -46,21 +46,21 @@ static bool prev_up = false;
 static bool prev_down = false;
 
 // Direct movement triggering system - bypasses SDL keyboard events for single moves
-static uint64_t last_move_time[4] = {0}; // LEFT, RIGHT, UP, DOWN
-static bool tilt_gesture_active[4] = {false}; // Track if we're in the middle of a tilt gesture
-static uint64_t deadzone_enter_time = 0; // When we entered deadzone
-static bool in_deadzone = false; // Are we currently in deadzone
-static const uint64_t move_cooldown_us = 200000; // 200ms cooldown between single moves
+static uint64_t last_move_time[4] = {0};               // LEFT, RIGHT, UP, DOWN
+static bool tilt_gesture_active[4] = {false};          // Track if we're in the middle of a tilt gesture
+static uint64_t deadzone_enter_time = 0;               // When we entered deadzone
+static bool in_deadzone = false;                       // Are we currently in deadzone
+static const uint64_t move_cooldown_us = 200000;       // 200ms cooldown between single moves
 static const uint64_t gesture_reset_time_us = 100000;  // 100ms in deadzone before allowing new gesture
 
 // Direct movement interface - will be called by main game
-static int pending_single_move = 0; // 0=none, 1=UP, 2=DOWN, 3=LEFT, 4=RIGHT
+static int pending_single_move = 0;  // 0=none, 1=UP, 2=DOWN, 3=LEFT, 4=RIGHT
 
 // Direction indices for arrays
-#define DIR_LEFT  0
+#define DIR_LEFT 0
 #define DIR_RIGHT 1
-#define DIR_UP    2
-#define DIR_DOWN  3
+#define DIR_UP 2
+#define DIR_DOWN 3
 
 /**
  * @brief Send SDL keyboard event for accelerometer input
@@ -82,8 +82,7 @@ static void send_accel_key_event(SDL_Scancode scancode, bool pressed) {
 
     SDL_KeyboardID keyboardID = keyboard_ids[0];
 
-    ESP_LOGD(TAG, "Accelerometer key %s: scancode=%d",
-             pressed ? "pressed" : "released", scancode);
+    ESP_LOGD(TAG, "Accelerometer key %s: scancode=%d", pressed ? "pressed" : "released", scancode);
 
     // Send key event to SDL (use a special key_id for accelerometer)
     SDL_SendKeyboardKey(SDL_GetTicks(), keyboardID, 100 + scancode, scancode, pressed);
@@ -103,15 +102,15 @@ static void handle_single_move(int dir_index, uint64_t current_time) {
     // ONE-SHOT LOGIC: Only trigger if this is a new gesture and no pending move
     if (!tilt_gesture_active[dir_index] && pending_single_move == 0 &&
         (current_time - last_move_time[dir_index]) >= move_cooldown_us) {
-        
+
         // Mark this gesture as active to prevent repeat
         tilt_gesture_active[dir_index] = true;
-        
+
         // Queue the single move (1=UP, 2=DOWN, 3=LEFT, 4=RIGHT)
         pending_single_move = dir_index + 1;
         last_move_time[dir_index] = current_time;
-        
-        const char* dir_names[] = {"LEFT", "RIGHT", "UP", "DOWN"};
+
+        const char *dir_names[] = {"LEFT", "RIGHT", "UP", "DOWN"};
         ESP_LOGI(TAG, "🎮 %s single move queued - precise one tile", dir_names[dir_index]);
     }
 }
@@ -136,7 +135,7 @@ void accelerometer_consume_pending_move(void) {
 
 /**
  * @brief Process accelerometer readings with improved tilt detection algorithm
- * 
+ *
  * This function implements a dual-threshold system:
  * - Small tilts generate single keystrokes (good for precise navigation)
  * - Large tilts switch to continuous movement mode (good for fast movement)
@@ -157,14 +156,14 @@ static void process_accelerometer_data(const icm42670_value_t *accel_data) {
             in_deadzone = true;
             deadzone_enter_time = current_time;
         }
-        
+
         // After being in deadzone long enough, reset gesture states
         if (current_time - deadzone_enter_time >= gesture_reset_time_us) {
             for (int i = 0; i < 4; i++) {
-                tilt_gesture_active[i] = false; // Reset gesture tracking
+                tilt_gesture_active[i] = false;  // Reset gesture tracking
             }
         }
-        
+
         // Release any currently pressed continuous keys
         if (prev_left) {
             send_accel_key_event(SDL_SCANCODE_LEFT, false);
@@ -189,11 +188,11 @@ static void process_accelerometer_data(const icm42670_value_t *accel_data) {
     }
 
     // Process each direction with the improved algorithm
-    
+
     // LEFT movement (negative X)
     if (x < -deadzone) {
         float tilt_magnitude = fabs(x);
-        
+
         if (tilt_magnitude >= large_tilt_threshold) {
             // Large tilt - continuous movement mode
             if (!prev_left) {
@@ -217,7 +216,7 @@ static void process_accelerometer_data(const icm42670_value_t *accel_data) {
     // RIGHT movement (positive X)
     if (x > deadzone) {
         float tilt_magnitude = fabs(x);
-        
+
         if (tilt_magnitude >= large_tilt_threshold) {
             // Large tilt - continuous movement mode
             if (!prev_right) {
@@ -241,7 +240,7 @@ static void process_accelerometer_data(const icm42670_value_t *accel_data) {
     // UP movement (positive Y)
     if (y > deadzone) {
         float tilt_magnitude = fabs(y);
-        
+
         if (tilt_magnitude >= large_tilt_threshold) {
             // Large tilt - continuous movement mode
             if (!prev_up) {
@@ -265,7 +264,7 @@ static void process_accelerometer_data(const icm42670_value_t *accel_data) {
     // DOWN movement (negative Y)
     if (y < -deadzone) {
         float tilt_magnitude = fabs(y);
-        
+
         if (tilt_magnitude >= large_tilt_threshold) {
             // Large tilt - continuous movement mode
             if (!prev_down) {
@@ -286,8 +285,8 @@ static void process_accelerometer_data(const icm42670_value_t *accel_data) {
         // Don't immediately reset keystroke_sent - let deadzone timeout handle it
     }
 
-    ESP_LOGV(TAG, "Accel: x=%.2f, y=%.2f -> L:%d R:%d U:%d D:%d (continuous mode)",
-             x, y, prev_left, prev_right, prev_up, prev_down);
+    ESP_LOGV(TAG, "Accel: x=%.2f, y=%.2f -> L:%d R:%d U:%d D:%d (continuous mode)", x, y, prev_left, prev_right,
+             prev_up, prev_down);
 }
 
 // Public API implementation
@@ -323,10 +322,10 @@ esp_err_t init_accelerometer(void) {
 
     // Configure accelerometer for gaming
     const icm42670_cfg_t imu_cfg = {
-        .acce_fs = ACCE_FS_2G, // ±2g range for sensitive tilt detection
-        .acce_odr = ACCE_ODR_100HZ, // 100Hz for smooth gaming (was 400Hz but that might be too fast)
-        .gyro_fs = GYRO_FS_2000DPS, // We don't use gyro but need to configure it
-        .gyro_odr = GYRO_ODR_100HZ, // Match accelerometer ODR
+        .acce_fs = ACCE_FS_2G,       // ±2g range for sensitive tilt detection
+        .acce_odr = ACCE_ODR_100HZ,  // 100Hz for smooth gaming (was 400Hz but that might be too fast)
+        .gyro_fs = GYRO_FS_2000DPS,  // We don't use gyro but need to configure it
+        .gyro_odr = GYRO_ODR_100HZ,  // Match accelerometer ODR
     };
 
     ret = icm42670_config(icm42670_handle, &imu_cfg);
@@ -367,9 +366,7 @@ esp_err_t init_accelerometer(void) {
 }
 
 void process_accelerometer(void) {
-    if (!accelerometer_initialized || !icm42670_handle) {
-        return;
-    }
+    if (!accelerometer_initialized || !icm42670_handle) { return; }
 
     // Read accelerometer data
     icm42670_value_t accel_data;
@@ -389,9 +386,7 @@ bool is_accelerometer_available(void) {
 }
 
 void cleanup_accelerometer(void) {
-    if (!accelerometer_initialized) {
-        return;
-    }
+    if (!accelerometer_initialized) { return; }
 
     ESP_LOGI(TAG, "Cleaning up accelerometer resources");
 
@@ -419,26 +414,27 @@ void set_accelerometer_threshold(float threshold) {
     // For backward compatibility, set both thresholds based on single value
     if (threshold >= 0.1f && threshold <= 1.0f) {
         small_tilt_threshold = threshold;
-        large_tilt_threshold = threshold * 1.8f;  // 180% of threshold for large tilt
-        if (large_tilt_threshold > 1.0f) large_tilt_threshold = 1.0f; // Cap at 1g
-        ESP_LOGI(TAG, "Accelerometer thresholds set: small=%.2f g, large=%.2f g", 
-                 small_tilt_threshold, large_tilt_threshold);
+        large_tilt_threshold = threshold * 1.8f;                       // 180% of threshold for large tilt
+        if (large_tilt_threshold > 1.0f) large_tilt_threshold = 1.0f;  // Cap at 1g
+        ESP_LOGI(TAG, "Accelerometer thresholds set: small=%.2f g, large=%.2f g", small_tilt_threshold,
+                 large_tilt_threshold);
     } else {
         ESP_LOGW(TAG, "Invalid threshold %.2f, must be between 0.1 and 1.0", threshold);
     }
 }
 
 void set_accelerometer_thresholds(float small_threshold, float large_threshold) {
-    if (small_threshold >= 0.1f && small_threshold <= 0.8f && 
-        large_threshold >= 0.2f && large_threshold <= 1.0f &&
+    if (small_threshold >= 0.1f && small_threshold <= 0.8f && large_threshold >= 0.2f && large_threshold <= 1.0f &&
         large_threshold > small_threshold) {
-        
+
         small_tilt_threshold = small_threshold;
         large_tilt_threshold = large_threshold;
-        ESP_LOGI(TAG, "Accelerometer thresholds set: small=%.2f g, large=%.2f g", 
-                 small_tilt_threshold, large_tilt_threshold);
+        ESP_LOGI(TAG, "Accelerometer thresholds set: small=%.2f g, large=%.2f g", small_tilt_threshold,
+                 large_tilt_threshold);
     } else {
-        ESP_LOGW(TAG, "Invalid thresholds small=%.2f, large=%.2f. Requirements: 0.1 <= small <= 0.8, 0.2 <= large <= 1.0, large > small", 
+        ESP_LOGW(TAG,
+                 "Invalid thresholds small=%.2f, large=%.2f. Requirements: 0.1 <= small <= 0.8, 0.2 <= large <= 1.0, "
+                 "large > small",
                  small_threshold, large_threshold);
     }
 }
@@ -452,7 +448,7 @@ void set_accelerometer_deadzone(float deadzone_val) {
     }
 }
 
-#else // !CONFIG_FRUITLAND_ACCELEROMETER_INPUT
+#else  // !CONFIG_FRUITLAND_ACCELEROMETER_INPUT
 
 // Stub implementations for when accelerometer support is disabled
 esp_err_t init_accelerometer(void) {
@@ -484,4 +480,4 @@ void set_accelerometer_deadzone(float deadzone_val) {
     ESP_LOGW(TAG, "Accelerometer input is disabled in configuration");
 }
 
-#endif // CONFIG_FRUITLAND_ACCELEROMETER_INPUT
+#endif  // CONFIG_FRUITLAND_ACCELEROMETER_INPUT
